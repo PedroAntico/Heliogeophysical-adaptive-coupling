@@ -1,0 +1,20 @@
+# Bibliotecas principais do framework HAC
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+xgboost
+requests
+
+# Para análise multifractal e wavelet (se usar depois)
+pywt
+statsmodels
+
+# Para lidar com APIs e tempo real (coleta solar)
+beautifulsoup4
+lxml
+
+# Para automação e logging
+tqdm
+loguru
