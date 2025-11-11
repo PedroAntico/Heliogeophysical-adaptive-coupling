@@ -1,7 +1,25 @@
 # data_fetcher.py
-import requests
+import os
 import pandas as pd
-from datetime import datetime
+import requests
+
+def fetch_real_time_solar_data():
+    # Garante que o diretório 'data' existe antes de salvar
+    os.makedirs("data", exist_ok=True)
+
+    # (seu código atual continua aqui)
+    df = pd.DataFrame({
+        # Exemplo: substitua pelos dados reais
+        "timestamp": ["2025-11-11T00:00Z"],
+        "speed_km_s": [429],
+        "density_pcm3": [3.44],
+        "bz_nT": [0.69]
+    })
+
+    # Salvar arquivo CSV
+    df.to_csv("data/solar_data_latest.csv", index=False)
+    print("✅ Dados solares salvos em data/solar_data_latest.csv")
+    
 
 def fetch_real_time_solar_data():
     """
