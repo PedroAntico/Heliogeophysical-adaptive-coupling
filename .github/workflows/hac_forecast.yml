@@ -53,3 +53,14 @@ jobs:
           git add results/*.png || true
           git commit -m "Atualização automática de previsões HAC 🌍" || echo "Nada a atualizar"
           git push "https://github-actions[bot]:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+  
+      - name: 🧪 Rodar validação comparativa (hac_validation.py)
+        run: |
+          python src/hac_validation.py
+      - name: 💾 Salvar relatório de validação
+        run: |
+          mkdir -p results
+          mv results/*validation* results/ || true
+          git add results/*validation* || true
+          git commit -m "Validação automática HAC x NOAA 🌞" || echo "Nada a validar"
+          git push
