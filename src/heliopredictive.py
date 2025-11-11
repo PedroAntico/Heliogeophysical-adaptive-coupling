@@ -104,7 +104,7 @@ class HACForecaster:
         for name, model in models.items():
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
-            rmse = mean_squared_error(y_test, y_pred, squared=False)
+            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
             mae = mean_absolute_error(y_test, y_pred)
             r2 = r2_score(y_test, y_pred)
             predictions[name] = y_pred
@@ -113,7 +113,7 @@ class HACForecaster:
 
         # Ensemble (média)
         ensemble_pred = np.mean(list(predictions.values()), axis=0)
-        ensemble_rmse = mean_squared_error(y_test, ensemble_pred, squared=False)
+        ensemble_rmse = np.sqrt(mean_squared_error(y_test, ensemble_pred))
         ensemble_r2 = r2_score(y_test, ensemble_pred)
         scores["Ensemble"] = {"RMSE": ensemble_rmse, "MAE": np.mean([s["MAE"] for s in scores.values()]), "R2": ensemble_r2}
         print(f"  {'Ensemble':12} | RMSE: {ensemble_rmse:6.2f} | R²: {ensemble_r2:6.3f}")
