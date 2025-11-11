@@ -124,23 +124,22 @@ class HACForecaster:
     # Benchmark: modelo persistente (último valor)
     # ============================================================
     def persistence_benchmark(self, y_test):
-    """
-    Calcula o modelo de persistência (baseline) e seus erros.
-    """
-    import numpy as np
-    from sklearn.metrics import mean_squared_error, r2_score
+        """
+        Calcula o modelo de persistência (baseline) e seus erros.
+        """
+        import numpy as np
+        from sklearn.metrics import mean_squared_error, r2_score
 
-    # Copia o vetor de teste e cria uma previsão de persistência (valor anterior)
-    y_persist = y_test.shift(1).fillna(y_test.mean())
+        # Cria previsão de persistência (valor anterior como próximo)
+        y_persist = np.roll(y_test, 1)
+        y_persist[0] = np.mean(y_test)
 
-    # Calcula o erro médio quadrático e o RMSE
-    mse = mean_squared_error(y_test, y_persist)
-    rmse = np.sqrt(mse)
+        # Calcula erros
+        mse = mean_squared_error(y_test, y_persist)
+        rmse = np.sqrt(mse)
+        r2 = r2_score(y_test, y_persist)
 
-    # Calcula o R²
-    r2 = r2_score(y_test, y_persist)
-
-    return {"RMSE": rmse, "R2": r2}, y_persist
+        return {"RMSE": rmse, "R2": r2}, y_persist
 
     # ============================================================
     # Previsão principal
