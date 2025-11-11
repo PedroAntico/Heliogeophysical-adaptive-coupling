@@ -125,7 +125,11 @@ class HACForecaster:
     # ============================================================
     def persistence_benchmark(self, y_test):
         y_persist = np.full_like(y_test, y_test[0])
-        rmse = mean_squared_error(y_test, y_persist, squared=False)
+        import numpy as np
+from sklearn.metrics import mean_squared_error
+
+mse = mean_squared_error(y_test, y_persist)
+rmse = np.sqrt(mse)
         r2 = r2_score(y_test, y_persist)
         return {"RMSE": rmse, "R2": r2}, y_persist
 
