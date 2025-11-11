@@ -1,0 +1,39 @@
+name: HAC Forecast Automation
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"  # roda a cada 3 horas
+  workflow_dispatch:       # permite rodar manualmente
+  push:
+    branches:
+      - main
+
+jobs:
+  run-hac-forecast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🛰️ Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: 🧠 Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 📦 Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          pip install matplotlib scikit-learn xgboost pandas numpy
+
+      - name: 🚀 Executar previsão HAC
+        run: |
+          python heliopredictive.py
+
+      - name: 📊 Commit e push dos resultados
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add hac_forecast_h*.png
+          git commit -m "Atualização automática de previsão HAC"
+          git push
