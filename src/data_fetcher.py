@@ -2,9 +2,10 @@
 import os
 import pandas as pd
 import requests
+from datetime import datetime  # <-- Adicione esta linha
 
 def fetch_real_time_solar_data():
-    # ✅ Garante que o diretório 'data' existe antes de salvar
+    # Garante que o diretório 'data' existe antes de salvar
     os.makedirs("data", exist_ok=True)
 
     # --- Aqui entra o código que coleta os dados reais ---
@@ -15,14 +16,14 @@ def fetch_real_time_solar_data():
         "bz_nT": [0.69]
     })
 
-    # ✅ Agora pode salvar o arquivo com segurança
+    # Salva os dados
     df.to_csv("data/solar_data_latest.csv", index=False)
     print("✅ Dados solares salvos em data/solar_data_latest.csv")
+    print(f"✅ Dados salvos: {len(df)} registros ({datetime.utcnow()} UTC)")  # <-- Linha que falhou
 
-# Executa a função se o script for chamado diretamente
 if __name__ == "__main__":
     fetch_real_time_solar_data()
-
+    
 def fetch_real_time_solar_data():
     """
     Coleta dados de vento solar em tempo real do SWPC (NOAA)
