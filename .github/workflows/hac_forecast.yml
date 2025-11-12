@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0  # Busca todo o histórico para evitar problemas
+          fetch-depth: 0
 
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v4
@@ -50,16 +50,15 @@ jobs:
 
       - name: 💾 Organizar resultados
         run: |
-          # Criar diretórios se não existirem
           mkdir -p results plots data logs
           
-          # Mover arquivos mantendo estrutura
-          find . -maxdepth 1 -name "*.png" -exec mv {} plots/ \; 2>/dev/null || true
-          find . -maxdepth 1 -name "*.csv" -not -path "./data/*" -exec mv {} data/ \; 2>/dev/null || true
-          find . -maxdepth 1 -name "*.json" -exec mv {} results/ \; 2>/dev/null || true
-          find . -maxdepth 1 -name "*.log" -exec mv {} logs/ \; 2>/dev/null || true
+          # Mover arquivos de forma mais específica
+          [ -f "*.png" ] && mv *.png plots/ 2>/dev/null || true
+          [ -f "*.csv" ] && mv *.csv data/ 2>/dev/null || true
+          [ -f "*.json" ] && mv *.json results/ 2>/dev/null || true
+          [ -f "*.log" ] && mv *.log logs/ 2>/dev/null || true
           
-          # Limpar diretório temporário se existir
+          # Limpar qualquer diretório duplicado
           rm -rf data/results/ 2>/dev/null || true
 
       - name: 📤 Commit e Push dos Resultados
@@ -69,24 +68,23 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Sincronizar com o repositório remoto primeiro
-          git pull --rebase origin main
-          
-          # Adicionar arquivos específicos que sabemos que existem
-          git add data/solar_data_latest.csv plots/ results/ logs/ || true
-          
-          # Verificar status
-          git status
-          
-          # Commit apenas se houver mudanças
-          if ! git diff --staged --quiet; then
-            git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')"
-            git push origin main
-          else
+          # Primeiro commitar as mudanças locais
+          git add -A
+          if git diff --staged --quiet; then
             echo "Nenhuma alteração para commitar"
+            exit 0
           fi
+          
+          git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')"
+          
+          # Fazer pull com merge strategy para resolver conflitos
+          git pull origin main --no-rebase -X theirs
+          
+          # Fazer push
+          git push origin main
 
       - name: 📊 Upload dos resultados como artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hac-validation-results
