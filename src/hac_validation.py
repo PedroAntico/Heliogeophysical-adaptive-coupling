@@ -64,7 +64,7 @@ def validate_hac_vs_noaa():
         print(f"\n🎯 Testando horizonte {h}h...")
         res = forecaster.forecast(df, horizon=h, test_size=0.3)
         rmse_hac = res['scores']['Ensemble']['RMSE']
-        rmse_persist = res['persist_scores']['RMSE']
+        rmse_persist = res["persist_score"]["RMSE"] if "persist_score" in res else res["persist"]["RMSE"]
 
         # Benchmark NOAA aproximado (dados históricos típicos)
         rmse_noaa = {
