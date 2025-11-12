@@ -4,33 +4,27 @@ hac_validation.py — Validação histórica HAC vs NOAA (Pedro Antico, 2025)
 Compara o modelo HACForecaster com previsões empíricas NOAA
 usando dados OMNI 1h (Dst, Bz) de 2015–2024.
 
-Métricas: RMSE, MAE, R², correlação, ganho percentual e p-valor (t-test)
-"""
-
 import os
 import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
 from heliopredictive import HACForecaster
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # ============================================================
-# 🚀 VALIDAÇÃO DO SISTEMA HAC VS NOAA — DADOS REAIS (2015–2024)
+# 🚀 VALIDAÇÃO DO SISTEMA HAC VS NOAA — DADOS REAIS OU BACKUP
 # ============================================================
 
 def fetch_noaa_real_data(days=5):
-    """
-    Coleta dados reais de vento solar e campo magnético da NOAA/SWPC.
-    Retorna DataFrame com parâmetros físicos padronizados para o HAC.
-    """
-    print(f"📡 Coletando dados reais da NOAA (últimos {days} dias)...")
+    """Coleta dados reais de vento solar e campo magnético da NOAA/SWPC.
+    Se falhar, tenta fallback NASA CDAWeb ou arquivo local CSV."""
+    print(f"📡 Tentando coletar dados da NOAA (últimos {days} dias)...")
 
-    base_url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json"
+    plasma_url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json"
     mag_url = "https://services.swpc.noaa.gov/products/solar-wind/mag-5-minute.json"
 
     try:
-        plasma = pd.DataFrame(requests.get(base_url, timeout=10).json()[1:], 
+        plasma = pd.DataFrame(requests.get(plasma_url, timeout=10).json()[1:], 
                               columns=["time_tag", "density", "speed", "temperature"])
         mag = pd.DataFrame(requests.get(mag_url, timeout=10).json()[1:], 
                            columns=["time_tag", "bx_gsm", "by_gsm", "bz_gsm", "bt"])
@@ -41,34 +35,53 @@ def fetch_noaa_real_data(days=5):
         df = pd.merge_asof(plasma.sort_values("time_tag"), mag.sort_values("time_tag"),
                            on="time_tag", tolerance=pd.Timedelta("5min"), direction="nearest")
 
-        # Converte tipos
         df = df.astype({
             "density": "float32", "speed": "float32", "temperature": "float32",
             "bx_gsm": "float32", "by_gsm": "float32", "bz_gsm": "float32", "bt": "float32"
         })
 
-        # Filtra últimos dias
         cutoff = datetime.utcnow() - timedelta(days=days)
         df = df[df["time_tag"] > cutoff].dropna()
 
-        print(f"✅ {len(df)} registros reais coletados de {df['time_tag'].min()} a {df['time_tag'].max()}")
+        print(f"✅ {len(df)} registros reais obtidos da NOAA")
         return df
 
     except Exception as e:
-        print("⚠️ Falha ao coletar dados NOAA:", e)
-        return pd.DataFrame()
+        print(f"⚠️ Falha NOAA: {e}")
+        print("🌐 Tentando fallback: NASA CDAWeb...")
+
+        try:
+            # CDAWeb API (plasma + magnético)
+            cdaweb_url = (
+                "https://cdaweb.gsfc.nasa.gov/pub/data/ace/mag/level_2_cdaweb/"
+                f"{datetime.utcnow().year}/"
+            )
+            response = requests.get(cdaweb_url, timeout=10)
+            if response.status_code == 200:
+                print("✅ Fallback CDAWeb disponível (mas sem parse automático ainda).")
+            raise ValueError("CDAWeb disponível mas sem parser ativo.")
+
+        except Exception as e2:
+            print(f"⚠️ Falha também na NASA CDAWeb: {e2}")
+            print("📂 Tentando usar backup local: data/solar_data_latest.csv...")
+
+            try:
+                df = pd.read_csv("data/solar_data_latest.csv")
+                df["time_tag"] = pd.to_datetime(df["time_tag"])
+                print(f"✅ {len(df)} registros carregados do backup local.")
+                return df
+            except Exception as e3:
+                print(f"❌ Nenhuma fonte de dados disponível: {e3}")
+                return pd.DataFrame()
 
 
 def validate_hac_vs_noaa():
-    """
-    Executa a validação entre previsões HAC e persistência NOAA.
-    Usa dados reais de campo magnético e vento solar.
-    """
+    """Executa validação HAC vs dados NOAA reais."""
     print("🚀 Iniciando validação HAC vs NOAA (2015–2024)\n")
 
     df = fetch_noaa_real_data(days=5)
     if df.empty:
-        print("❌ Nenhum dado disponível — verifique conexão com a NOAA/SWPC.")
+        print("❌ Nenhum dado disponível — verifique conexão ou arquivo local.")
         return
 
     forecaster = HACForecaster()
@@ -79,11 +92,8 @@ def validate_hac_vs_noaa():
         print(f"🎯 Testando horizonte {h}h...\n")
         res = forecaster.forecast(df, horizon=h)
 
-        # Depuração: ver chaves retornadas
-        print("🔍 Chaves retornadas:", res.keys())
-
-        # Captura segura dos resultados
-        persist = res.get("persist_score", {}) or res.get("persist_scores", {}) or res.get("persist", {})
+        # Ajuste para lidar com diferentes nomes de chaves
+        persist = res.get("persist_score", {}) or res.get("persist_scores", {})
         rmse_persist = persist.get("RMSE", np.nan)
         r2_persist = persist.get("R2", np.nan)
 
@@ -91,13 +101,9 @@ def validate_hac_vs_noaa():
         rmse_hac = ensemble.get("RMSE", np.nan)
         r2_hac = ensemble.get("R2", np.nan)
 
-        # Cálculo da melhoria percentual
-        if not np.isnan(rmse_persist) and not np.isnan(rmse_hac):
-            improvement = ((rmse_persist - rmse_hac) / rmse_persist) * 100
-        else:
-            improvement = np.nan
+        improvement = ((rmse_persist - rmse_hac) / rmse_persist) * 100 if not np.isnan(rmse_hac) else np.nan
 
-        print(f"📊 RMSE NOAA (persistência): {rmse_persist:.2f} | RMSE HAC: {rmse_hac:.2f} | Melhoria: {improvement:+.1f}%\n")
+        print(f"📊 RMSE NOAA: {rmse_persist:.2f} | RMSE HAC: {rmse_hac:.2f} | ΔMelhoria: {improvement:+.1f}%\n")
 
         results.append({
             "Horizonte (h)": h,
@@ -108,7 +114,6 @@ def validate_hac_vs_noaa():
             "Melhoria (%)": improvement
         })
 
-    # Salva resultados
     os.makedirs("results", exist_ok=True)
     results_df = pd.DataFrame(results)
     results_path = "results/hac_validation_results.csv"
