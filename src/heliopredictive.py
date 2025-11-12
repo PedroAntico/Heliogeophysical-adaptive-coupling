@@ -144,7 +144,7 @@ class HACForecaster:
     # ============================================================
     # Previsão principal
     # ============================================================
-    def forecast(self, df, horizon=6):
+    def forecast(self, df, horizon=6, test_size=0.3):
         print(f"\n🎯 Previsão HAC — Horizonte {horizon}h")
         X_train, X_test, y_train, y_test, scaler, feature_columns = self.prepare_features_targets(df, horizon=horizon)
 
