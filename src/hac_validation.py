@@ -53,33 +53,22 @@ class SolarDataValidator:
             logger.info(f"Estrutura Plasma: {len(plasma_data[0])} colunas")
             logger.info(f"Estrutura Mag: {len(mag_data[0])} colunas")
             
-            # 🟢 SOLUÇÃO DINÂMICA: Usar primeira linha como cabeçalho
-            plasma_df = pd.DataFrame(plasma_data[1:], columns=plasma_data[0])
-            mag_df = pd.DataFrame(mag_data[1:], columns=mag_data[0])
-            
-            # Renomear colunas dinamicamente
-            plasma_rename_map = {}
-            mag_rename_map = {}
-            
-            # Mapear colunas do plasma
-            for i, col in enumerate(plasma_df.columns):
-                if i == 0: plasma_rename_map[col] = "time_tag"
-                elif i == 1: plasma_rename_map[col] = "density"
-                elif i == 2: plasma_rename_map[col] = "speed" 
-                elif i == 3: plasma_rename_map[col] = "temperature"
-                # Ignorar colunas extras
-            
-            # Mapear colunas magnéticas
-            for i, col in enumerate(mag_df.columns):
-                if i == 0: mag_rename_map[col] = "time_tag"
-                elif i == 1: mag_rename_map[col] = "bx_gsm"
-                elif i == 2: mag_rename_map[col] = "by_gsm"
-                elif i == 3: mag_rename_map[col] = "bz_gsm"
-                elif i == 4: mag_rename_map[col] = "bt"
-                # Ignorar colunas extras
-            
-            plasma_df = plasma_df.rename(columns=plasma_rename_map)
-            mag_df = mag_df.rename(columns=mag_rename_map)
+            # 🟢 Criação de DataFrames dinâmica e segura
+    def to_dataframe_safe(data):
+    header = data[0]
+    body = [row for row in data[1:] if len(row) == len(header)]
+    # Corrige linhas com colunas extras ou a menos
+    fixed = []
+    for row in data[1:]:
+        if len(row) < len(header):
+            row = row + [None] * (len(header) - len(row))
+        elif len(row) > len(header):
+            row = row[:len(header)]
+        fixed.append(row)
+    return pd.DataFrame(fixed, columns=header)
+
+plasma_df = to_dataframe_safe(plasma_data)
+mag_df = to_dataframe_safe(mag_data)
             
             # Manter apenas colunas necessárias
             required_plasma = ["time_tag", "density", "speed", "temperature"]
