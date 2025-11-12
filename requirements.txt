@@ -18,3 +18,25 @@ statsmodels
 # Automação e logging
 tqdm
 loguru
+
+# Validação e visualização científica
+seaborn
+plotly
+kaleido  # Para exportar plotly como imagens
+
+# Modelos avançados (opcionais com fallback)
+tensorflow-cpu  # Versão mais leve para CI/CD
+torch
+
+# APIs específicas para dados solares
+sunpy
+heliopy
+astropy
+
+# Otimização e paralelização
+joblib
+dask
+
+# Formatação e relatórios
+jinja2  # Para templates de relatórios
+pytest  # Para testes automatizados
