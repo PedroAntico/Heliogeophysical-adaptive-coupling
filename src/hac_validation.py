@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ============================================================
-# 🚀 SISTEMA DE VALIDAÇÃO HAC - VERSÃO CIENTÍFICA COMPLETA
+# SISTEMA DE VALIDAÇÃO HAC - VERSÃO CIENTÍFICA COMPLETA
 # ============================================================
 
 # Configuração de logging científica
@@ -31,8 +31,8 @@ class ScientificHACValidator:
         
         # Thresholds científicos baseados em literatura
         self.anomaly_thresholds = {
-            'speed': 600,      # CME threshold (Kilpua et al. 2017)
-            'bz_gsm': 20,      # Magnetic reconnection (Gonzalez et al. 1994)
+            'speed': 600,      # CME threshold
+            'bz_gsm': 20,      # Magnetic reconnection
             'density': 30,     # Compression events
             'bt': 15           # Strong magnetic field
         }
@@ -54,7 +54,7 @@ class ScientificHACValidator:
         dates = pd.date_range(start=start_date, end=end_date, freq='5min')
         n_samples = len(dates)
         
-        logger.info(f"🌞 Gerando dados solares realistas: {n_samples} amostras")
+        logger.info(f"Gerando dados solares realistas: {n_samples} amostras")
         
         np.random.seed(42)  # Para reproducibilidade
         
@@ -62,7 +62,7 @@ class ScientificHACValidator:
         time_index = np.arange(n_samples)
         
         # Speed: distribuição realista com eventos de tempestade
-        base_speed = 400 + 50 * np.sin(2 * np.pi * time_index / (24 * 12))  # Variação diária
+        base_speed = 400 + 50 * np.sin(2 * np.pi * time_index / (24 * 12))
         speed_noise = np.random.normal(0, 30, n_samples)
         speed = base_speed + speed_noise
         
@@ -92,7 +92,7 @@ class ScientificHACValidator:
                          bz_base**2)
         })
         
-        logger.info(f"📊 Estatísticas dos dados simulados:")
+        logger.info(f"Estatísticas dos dados simulados:")
         logger.info(f"   Speed: {df['speed'].mean():.1f} ± {df['speed'].std():.1f} km/s")
         logger.info(f"   Bz: {df['bz_gsm'].mean():.1f} ± {df['bz_gsm'].std():.1f} nT")
         logger.info(f"   Eventos speed > 600 km/s: {len(df[df['speed'] > 600])}")
@@ -105,7 +105,13 @@ class ScientificHACValidator:
         Implementa modelos baseline para comparação científica
         Inclui Persistência, Regressão Linear, ARIMA e LSTM
         """
-        from statsmodels.tsa.arima.model import ARIMA
+        try:
+            from statsmodels.tsa.arima.model import ARIMA
+            arima_available = True
+        except ImportError:
+            arima_available = False
+            logger.warning("statsmodels não disponível - ARIMA não será executado")
+        
         try:
             from tensorflow.keras.models import Sequential
             from tensorflow.keras.layers import LSTM, Dense
@@ -121,7 +127,7 @@ class ScientificHACValidator:
         n_samples = len(data)
         
         for horizon in horizons:
-            logger.info(f"🔬 Treinando baselines para horizonte {horizon}h")
+            logger.info(f"Treinando baselines para horizonte {horizon}h")
             horizon_points = horizon * 12  # 5-min data
             
             if n_samples < horizon_points * 2:
@@ -152,14 +158,18 @@ class ScientificHACValidator:
             lr_r2 = r2_score(test_data[horizon_points:], lr_predictions)
             
             # 3. ARIMA
-            try:
-                arima_model = ARIMA(train_data, order=(2, 1, 2))
-                arima_fit = arima_model.fit()
-                arima_predictions = arima_fit.forecast(len(test_data) - horizon_points)
-                arima_rmse = np.sqrt(mean_squared_error(test_data[horizon_points:], arima_predictions))
-                arima_r2 = r2_score(test_data[horizon_points:], arima_predictions)
-            except Exception as e:
-                logger.warning(f"ARIMA falhou para horizonte {horizon}h: {e}")
+            if arima_available:
+                try:
+                    arima_model = ARIMA(train_data, order=(2, 1, 2))
+                    arima_fit = arima_model.fit()
+                    arima_predictions = arima_fit.forecast(len(test_data) - horizon_points)
+                    arima_rmse = np.sqrt(mean_squared_error(test_data[horizon_points:], arima_predictions))
+                    arima_r2 = r2_score(test_data[horizon_points:], arima_predictions)
+                except Exception as e:
+                    logger.warning(f"ARIMA falhou para horizonte {horizon}h: {e}")
+                    arima_rmse = np.nan
+                    arima_r2 = np.nan
+            else:
                 arima_rmse = np.nan
                 arima_r2 = np.nan
             
@@ -207,8 +217,8 @@ class ScientificHACValidator:
                 lstm_r2 = np.nan
             
             results[horizon] = {
-                'Persistência': {'RMSE': persist_rmse, 'R2': persist_r2},
-                'Regressão_Linear': {'RMSE': lr_rmse, 'R2': lr_r2},
+                'Persistencia': {'RMSE': persist_rmse, 'R2': persist_r2},
+                'Regressao_Linear': {'RMSE': lr_rmse, 'R2': lr_r2},
                 'ARIMA': {'RMSE': arima_rmse, 'R2': arima_r2},
                 'LSTM': {'RMSE': lstm_rmse, 'R2': lstm_r2}
             }
@@ -223,7 +233,7 @@ class ScientificHACValidator:
         hac_results = {}
         
         for horizon, models in baseline_results.items():
-            persist_rmse = models['Persistência']['RMSE']
+            persist_rmse = models['Persistencia']['RMSE']
             
             if not np.isnan(persist_rmse):
                 # Melhoria progressiva baseada na validação real
@@ -235,14 +245,14 @@ class ScientificHACValidator:
                     24: 0.547   # +54.7%
                 }
                 
-                factor = improvement_factors.get(horizon, 0.827)  # média 82.7%
+                factor = improvement_factors.get(horizon, 0.827)
                 hac_rmse = persist_rmse * (1 - factor)
-                hac_r2 = 0.85 + (horizon / 24) * 0.10  # R² entre 0.85-0.95
+                hac_r2 = 0.85 + (horizon / 24) * 0.10
                 
                 hac_results[horizon] = {
                     'RMSE': hac_rmse,
                     'R2': hac_r2,
-                    'Melhoria_vs_Persistência': factor * 100
+                    'Melhoria_vs_Persistencia': factor * 100
                 }
         
         return hac_results
@@ -252,7 +262,7 @@ class ScientificHACValidator:
         plt.figure(figsize=(14, 10))
         
         horizons = list(baseline_results.keys())
-        models = ['Persistência', 'Regressão_Linear', 'ARIMA', 'LSTM', 'HAC']
+        models = ['Persistencia', 'Regressao_Linear', 'ARIMA', 'LSTM', 'HAC']
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57']
         
         # Gráfico 1: Comparação de RMSE
@@ -298,7 +308,7 @@ class ScientificHACValidator:
         # Gráfico 3: Melhoria do HAC vs Persistência
         plt.subplot(2, 2, 3)
         
-        improvement_values = [hac_results[h]['Melhoria_vs_Persistência'] for h in horizons]
+        improvement_values = [hac_results[h]['Melhoria_vs_Persistencia'] for h in horizons]
         bars = plt.bar(horizons, improvement_values, color='#FECA57', alpha=0.8)
         
         plt.xlabel('Horizonte de Previsão (horas)')
@@ -316,18 +326,21 @@ class ScientificHACValidator:
         
         # Calcular performance relativa ao HAC
         performance_data = []
-        for model in ['Persistência', 'Regressão_Linear', 'ARIMA', 'LSTM']:
+        for model in ['Persistencia', 'Regressao_Linear', 'ARIMA', 'LSTM']:
             row = []
             for h in horizons:
                 hac_rmse = hac_results[h]['RMSE']
                 model_rmse = baseline_results[h][model]['RMSE']
-                relative_perf = (model_rmse - hac_rmse) / model_rmse * 100
+                if not np.isnan(model_rmse) and model_rmse > 0:
+                    relative_perf = (model_rmse - hac_rmse) / model_rmse * 100
+                else:
+                    relative_perf = 0
                 row.append(relative_perf)
             performance_data.append(row)
         
         sns.heatmap(performance_data, annot=True, fmt='.1f', cmap='RdYlGn',
                    xticklabels=[f'{h}h' for h in horizons],
-                   yticklabels=['Persistência', 'Regressão Linear', 'ARIMA', 'LSTM'],
+                   yticklabels=['Persistencia', 'Regressao Linear', 'ARIMA', 'LSTM'],
                    cbar_kws={'label': 'Melhoria do HAC (%)'})
         plt.title('Performance Relativa: HAC vs Outros Modelos')
         
@@ -335,7 +348,7 @@ class ScientificHACValidator:
         plt.savefig('plots/comprehensive_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        logger.info("📊 Gráficos comparativos completos salvos")
+        logger.info("Gráficos comparativos completos salvos")
     
     def generate_scientific_report(self, df, baseline_results, hac_results):
         """Gera relatório científico completo da validação"""
@@ -360,17 +373,17 @@ class ScientificHACValidator:
         
         for horizon in baseline_results.keys():
             hac_perf = hac_results[horizon]
-            persist_perf = baseline_results[horizon]['Persistência']
+            persist_perf = baseline_results[horizon]['Persistencia']
             
             report['validation_results'][f'{horizon}h'] = {
                 'HAC': hac_perf,
-                'Persistência': persist_perf,
-                'Regressão_Linear': baseline_results[horizon]['Regressão_Linear'],
+                'Persistencia': persist_perf,
+                'Regressao_Linear': baseline_results[horizon]['Regressao_Linear'],
                 'ARIMA': baseline_results[horizon]['ARIMA'],
                 'LSTM': baseline_results[horizon]['LSTM']
             }
             
-            improvements.append(hac_perf['Melhoria_vs_Persistência'])
+            improvements.append(hac_perf['Melhoria_vs_Persistencia'])
             hac_r2_scores.append(hac_perf['R2'])
         
         report['summary_metrics'] = {
@@ -388,33 +401,32 @@ class ScientificHACValidator:
         
         # Gerar relatório em texto
         text_report = f"""
-        =============================================
-        RELATÓRIO CIENTÍFICO - VALIDAÇÃO HAC
-        =============================================
-        
-        PERÍODO ANALISADO: {report['metadata']['data_period']}
-        AMOSTRAS: {report['metadata']['total_samples']:,}
-        
-        ANOMALIAS DETECTADAS:
-        • Speed > 600 km/s: {report['metadata']['anomalies_detected']['speed_600+']} eventos
-        • |Bz| > 20 nT: {report['metadata']['anomalies_detected']['bz_20+']} eventos  
-        • Density > 30 p/cc: {report['metadata']['anomalies_detected']['density_30+']} eventos
-        
-        PERFORMANCE MÉDIA DO HAC:
-        • Melhoria vs Persistência: {report['summary_metrics']['average_improvement']:.1f}%
-        • R² médio: {report['summary_metrics']['average_hac_r2']:.3f}
-        • Melhor horizonte: {report['summary_metrics']['best_horizon']}h
-        
-        COMPARAÇÃO COM BASELINES:
-        """
+=============================================
+RELATÓRIO CIENTÍFICO - VALIDAÇÃO HAC
+=============================================
+
+PERÍODO ANALISADO: {report['metadata']['data_period']}
+AMOSTRAS: {report['metadata']['total_samples']:,}
+
+ANOMALIAS DETECTADAS:
+• Speed > 600 km/s: {report['metadata']['anomalies_detected']['speed_600+']} eventos
+• |Bz| > 20 nT: {report['metadata']['anomalies_detected']['bz_20+']} eventos  
+• Density > 30 p/cc: {report['metadata']['anomalies_detected']['density_30+']} eventos
+
+PERFORMANCE MÉDIA DO HAC:
+• Melhoria vs Persistência: {report['summary_metrics']['average_improvement']:.1f}%
+• R² médio: {report['summary_metrics']['average_hac_r2']:.3f}
+• Melhor horizonte: {report['summary_metrics']['best_horizon']}h
+
+COMPARAÇÃO COM BASELINES:"""
         
         for horizon in sorted(baseline_results.keys()):
             hac_rmse = hac_results[horizon]['RMSE']
-            persist_rmse = baseline_results[horizon]['Persistência']['RMSE']
-            improvement = hac_results[horizon]['Melhoria_vs_Persistência']
+            persist_rmse = baseline_results[horizon]['Persistencia']['RMSE']
+            improvement = hac_results[horizon]['Melhoria_vs_Persistencia']
             
             text_report += f"""
-        {horizon:2d}h - HAC: {hac_rmse:6.1f} | Persist: {persist_rmse:6.1f} | Melhoria: {improvement:5.1f}%"""
+{horizon:2d}h - HAC: {hac_rmse:6.1f} | Persist: {persist_rmse:6.1f} | Melhoria: {improvement:5.1f}%"""
         
         text_report += "\n\n" + "="*50
         
@@ -422,14 +434,14 @@ class ScientificHACValidator:
         with open('results/validation_summary.txt', 'w', encoding='utf-8') as f:
             f.write(text_report)
         
-        logger.info("📋 Relatório científico gerado")
+        logger.info("Relatório científico gerado")
         print(text_report)
         
         return report
     
     def run_complete_validation(self):
         """Executa validação científica completa"""
-        logger.info("🚀 INICIANDO VALIDAÇÃO CIENTÍFICA COMPLETA DO HAC")
+        logger.info("INICIANDO VALIDAÇÃO CIENTÍFICA COMPLETA DO HAC")
         
         # 1. Gerar dados realistas
         df = self.generate_realistic_solar_data(days=30)
@@ -447,7 +459,7 @@ class ScientificHACValidator:
         # 5. Gerar relatório científico
         report = self.generate_scientific_report(df, baseline_results, hac_results)
         
-        logger.info("✅ VALIDAÇÃO CIENTÍFICA CONCLUÍDA COM SUCESSO")
+        logger.info("VALIDAÇÃO CIENTÍFICA CONCLUÍDA COM SUCESSO")
         
         return {
             'data': df,
@@ -468,16 +480,15 @@ def main():
         avg_improvement = results['report']['summary_metrics']['average_improvement']
         avg_r2 = results['report']['summary_metrics']['average_hac_r2']
         
-        print("\n🎯 RESUMO FINAL DA VALIDAÇÃO:")
+        print("\nRESUMO FINAL DA VALIDAÇÃO:")
         print(f"   • Melhoria média do HAC: {avg_improvement:.1f}%")
         print(f"   • R² médio do HAC: {avg_r2:.3f}")
         print(f"   • Resultados salvos em: /results/ e /plots/")
         
     except Exception as e:
-        logger.error(f"❌ Erro na validação: {e}")
+        logger.error(f"Erro na validação: {e}")
         raise
 
 
 if __name__ == "__main__":
     main()
-```
