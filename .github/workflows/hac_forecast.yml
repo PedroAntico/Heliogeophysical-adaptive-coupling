@@ -20,49 +20,71 @@ jobs:
     steps:
       - name: 📥 Clonar repositório
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # Busca todo o histórico para evitar problemas
 
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: 📦 Instalar dependências HAC completas
-  run: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-    # Fallbacks para dependências pesadas
-    pip install tensorflow-cpu || pip install tensorflow || echo "TensorFlow não instalado"
-    pip install torch --index-url https://download.pytorch.org/whl/cpu || echo "PyTorch não instalado"
-      - name: 🌞 Coletar dados solares (data_fetcher.py)
+      - name: 📦 Instalar dependências HAC
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install seaborn plotly kaleido
+          pip install tensorflow-cpu || echo "TensorFlow não instalado"
+
+      - name: 🌞 Coletar dados solares
         run: |
           python src/data_fetcher.py
 
-      - name: 🔮 Rodar previsão heliogeofísica (heliopredictive.py)
+      - name: 🔮 Rodar previsão heliogeofísica
         run: |
           python src/heliopredictive.py
 
-      - name: 🧪 Rodar validação comparativa (hac_validation.py)
+      - name: 🧪 Rodar validação comparativa
         run: |
           python src/hac_validation.py
 
-      - name: 💾 Salvar resultados e gráficos
+      - name: 💾 Organizar resultados
         run: |
+          # Criar diretórios se não existirem
           mkdir -p results plots data logs
-          # Mover todos os arquivos de resultados
-          mv *.png results/ plots/ 2>/dev/null || true
-          mv *.csv results/ data/ 2>/dev/null || true  
-          mv *.json results/ 2>/dev/null || true
-          mv *.log logs/ 2>/dev/null || true
+          
+          # Mover arquivos mantendo estrutura
+          find . -maxdepth 1 -name "*.png" -exec mv {} plots/ \; 2>/dev/null || true
+          find . -maxdepth 1 -name "*.csv" -not -path "./data/*" -exec mv {} data/ \; 2>/dev/null || true
+          find . -maxdepth 1 -name "*.json" -exec mv {} results/ \; 2>/dev/null || true
+          find . -maxdepth 1 -name "*.log" -exec mv {} logs/ \; 2>/dev/null || true
+          
+          # Limpar diretório temporário se existir
+          rm -rf data/results/ 2>/dev/null || true
 
       - name: 📤 Commit e Push dos Resultados
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add results/ plots/ data/ logs/ || true
-          git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')" || echo "Nenhuma alteração para commitar"
-          git push "https://${{ github.actor }}:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Sincronizar com o repositório remoto primeiro
+          git pull --rebase origin main
+          
+          # Adicionar arquivos específicos que sabemos que existem
+          git add data/solar_data_latest.csv plots/ results/ logs/ || true
+          
+          # Verificar status
+          git status
+          
+          # Commit apenas se houver mudanças
+          if ! git diff --staged --quiet; then
+            git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')"
+            git push origin main
+          else
+            echo "Nenhuma alteração para commitar"
+          fi
 
       - name: 📊 Upload dos resultados como artifact
         uses: actions/upload-artifact@v4
