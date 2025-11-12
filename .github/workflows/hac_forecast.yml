@@ -19,17 +19,22 @@ jobs:
 
     steps:
       - name: 📥 Clonar repositório
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: 📦 Instalar dependências
+      - name: 📦 Instalar dependências HAC
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Dependências essenciais para validação científica
+          pip install pandas numpy requests matplotlib seaborn scikit-learn
+          # Dependências opcionais (com fallback)
+          pip install statsmodels || echo "Statsmodels não instalado - continuando sem ARIMA"
+          pip install tensorflow || echo "TensorFlow não instalado - continuando sem LSTM"
 
       - name: 🌞 Coletar dados solares (data_fetcher.py)
         run: |
@@ -39,10 +44,18 @@ jobs:
         run: |
           python src/heliopredictive.py
 
+      - name: 🧪 Rodar validação comparativa (hac_validation.py)
+        run: |
+          python src/hac_validation.py
+
       - name: 💾 Salvar resultados e gráficos
         run: |
-          mkdir -p results
-          mv *.png results/ || true
+          mkdir -p results plots data logs
+          # Mover todos os arquivos de resultados
+          mv *.png results/ plots/ 2>/dev/null || true
+          mv *.csv results/ data/ 2>/dev/null || true  
+          mv *.json results/ 2>/dev/null || true
+          mv *.log logs/ 2>/dev/null || true
 
       - name: 📤 Commit e Push dos Resultados
         env:
@@ -50,17 +63,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add results/*.png || true
-          git commit -m "Atualização automática de previsões HAC 🌍" || echo "Nada a atualizar"
-          git push "https://github-actions[bot]:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
-  
-      - name: 🧪 Rodar validação comparativa (hac_validation.py)
-        run: |
-          python src/hac_validation.py
-      - name: 💾 Salvar relatório de validação
-        run: |
-          mkdir -p results
-          mv results/*validation* results/ || true
-          git add results/*validation* || true
-          git commit -m "Validação automática HAC x NOAA 🌞" || echo "Nada a validar"
-          git push
+          git add results/ plots/ data/ logs/ || true
+          git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')" || echo "Nenhuma alteração para commitar"
+          git push "https://${{ github.actor }}:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+
+      - name: 📊 Upload dos resultados como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hac-validation-results
+          path: |
+            results/
+            plots/
+            data/
+            logs/
+          retention-days: 30
