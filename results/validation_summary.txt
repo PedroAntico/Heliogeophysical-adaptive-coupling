@@ -1,0 +1,26 @@
+
+=============================================
+RELATÓRIO CIENTÍFICO - VALIDAÇÃO HAC
+=============================================
+
+PERÍODO ANALISADO: 2025-10-12 00:00:00 to 2025-11-11 00:00:00
+AMOSTRAS: 8,641
+
+ANOMALIAS DETECTADAS:
+• Speed > 600 km/s: 864 eventos
+• |Bz| > 20 nT: 227 eventos  
+• Density > 30 p/cc: 6 eventos
+
+PERFORMANCE MÉDIA DO HAC:
+• Melhoria vs Persistência: 82.7%
+• R² médio: 0.888
+• Melhor horizonte: 24h
+
+COMPARAÇÃO COM BASELINES:
+ 1h - HAC:    2.6 | Persist:  138.0 | Melhoria:  98.1%
+ 3h - HAC:    8.0 | Persist:  142.6 | Melhoria:  94.4%
+ 6h - HAC:   16.5 | Persist:  146.2 | Melhoria:  88.7%
+12h - HAC:   34.5 | Persist:  152.8 | Melhoria:  77.4%
+24h - HAC:   63.1 | Persist:  139.3 | Melhoria:  54.7%
+
+==================================================
