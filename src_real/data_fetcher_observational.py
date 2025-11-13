@@ -1,5 +1,5 @@
 """
-src/data_fetcher_observational.py
+src_real/data_fetcher_observational.py
 Coletor STRICT de dados observacionais - SEM FALLBACK SINTÉTICO
 Falha explicitamente se não conseguir dados reais
 """
