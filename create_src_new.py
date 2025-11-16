@@ -182,6 +182,38 @@ FILES = {
                 return {}
     """),
     
+    f"{ROOT}/utils/logger.py": dedent("""\
+        import logging
+        import sys
+        from pathlib import Path
+
+        def setup_logging(log_file: str = None, level: str = "INFO"):
+            format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            
+            logger = logging.getLogger('heliogeophysical')
+            logger.setLevel(getattr(logging, level.upper()))
+            
+            # Remove handlers existentes
+            for handler in logger.handlers[:]:
+                logger.removeHandler(handler)
+            
+            # Console handler
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(logging.Formatter(format_string))
+            logger.addHandler(console_handler)
+            
+            # File handler
+            if log_file:
+                log_path = Path(log_file)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                file_handler = logging.FileHandler(log_file)
+                file_handler.setFormatter(logging.Formatter(format_string))
+                logger.addHandler(file_handler)
+            
+            return logger
+    """),
+    
     # fetchers
     f"{ROOT}/fetchers/__init__.py": "",
     
@@ -443,9 +475,6 @@ FILES = {
     # main
     f"{ROOT}/main.py": dedent("""\
         #!/usr/bin/env python3
-        """
-        Pipeline principal do projeto Heliogeophysical
-        """
         import logging
         import os
         from datetime import datetime
@@ -524,25 +553,79 @@ FILES = {
             main()
     """),
     
-    f"{ROOT}/utils/logger.py": dedent("""\
-        import logging
-        import sys
-        from pathlib import Path
+    # Arquivos de marcação de diretório
+    "data/.gitkeep": "",
+    "logs/.gitkeep": "",
+    "models/.gitkeep": ""
+}
 
-        def setup_logging(log_file: str = None, level: str = "INFO"):
-            format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            
-            logger = logging.getLogger('heliogeophysical')
-            logger.setLevel(getattr(logging, level.upper()))
-            
-            # Remove handlers existentes
-            for handler in logger.handlers[:]:
-                logger.removeHandler(handler)
-            
-            # Console handler
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setFormatter(logging.Formatter(format_string))
-            logger.addHandler(console_handler)
-            
-            # File handler
-  
+def ensure_parent_directory(filepath: str):
+    parent = os.path.dirname(filepath)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+
+def safe_write_file(filepath: str, content: str):
+    ensure_parent_directory(filepath)
+    
+    if os.path.exists(filepath):
+        new_filepath = f"{filepath}.new"
+        with open(new_filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"⚠️  Arquivo existente: {filepath} -> Criado {new_filepath}")
+    else:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"✅ Criado: {filepath}")
+
+def create_directory_structure():
+    directories = [
+        ROOT,
+        f"{ROOT}/config",
+        f"{ROOT}/utils", 
+        f"{ROOT}/fetchers",
+        f"{ROOT}/processing",
+        f"{ROOT}/detection",
+        "data/raw",
+        "data/processed",
+        "data/historical",
+        "logs",
+        "models"
+    ]
+    
+    for directory in directories:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        print(f"📁 Diretório criado: {directory}")
+
+def main():
+    print("🚀 Criando estrutura src_new...")
+    print("=" * 50)
+    
+    create_directory_structure()
+    
+    total_files = len(FILES)
+    for i, (filepath, content) in enumerate(FILES.items(), 1):
+        print(f"[{i}/{total_files}] Processando {filepath}")
+        safe_write_file(filepath, content)
+    
+    print("=" * 50)
+    print("🎉 Estrutura criada com sucesso!")
+    print("\n📋 PRÓXIMOS PASSOS:")
+    print("1. Instale as dependências:")
+    print("   pip install -r requirements.txt")
+    print("2. Para CDAWeb (opcional):")
+    print("   pip install cdasws")
+    print("3. Execute o pipeline:")
+    print("   python src_new/main.py")
+    print("\n📁 ESTRUTURA CRIADA:")
+    print("   src_new/config/     - Configurações YAML")
+    print("   src_new/fetchers/   - Coletores de dados NOAA/NASA")
+    print("   src_new/utils/      - Utilitários (retry, I/O, logging)")
+    print("   src_new/processing/ - Processamento e merge de dados")
+    print("   src_new/detection/  - Detecção de eventos heliofísicos")
+    print("   data/              - Dados brutos e processados")
+    print("   logs/              - Arquivos de log")
+
+if __name__ == "__main__":
+    main()
+EOF
+```
