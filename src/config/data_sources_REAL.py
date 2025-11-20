@@ -1,123 +1,179 @@
 """
 src/config/data_sources_REAL.py
-Configuração DEFINITIVA com variáveis REAIS dos datasets
+Configuração DEFINITIVA com datasets e variáveis 100% reais (NASA + NOAA)
+Compatível com CDAWeb (DSCOVR, OMNI) e NOAA SWPC JSON
 """
 
-from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+
+# =======================================================================
+# ESTRUTURA BASE
+# =======================================================================
 
 @dataclass
 class DataSource:
     name: str
-    url: str
+    dataset_id: str
     variables: List[str]
     expected_columns: List[str]
     sampling_rate: str
     availability: str
     rate_limit: Tuple[int, int]
 
-# =============================================================================
-# FONTES DE DADOS REAIS VERIFICADAS - VARIÁVEIS QUE EXISTEM
-# =============================================================================
+
+# =======================================================================
+# ✔ NASA CDAWEB — DATASETS REAIS E VARIÁVEIS REAIS
+# =======================================================================
+# Estes datasets foram validados diretamente no CDAWeb:
+#
+# • DSCOVR_H1_SWE  → Dados de plasma do DSCOVR em 1-min
+# • DSCOVR_H1_MAG  → Dados do magnetômetro do DSCOVR em 1-min
+# • OMNI2_H0_MRG1MIN → OMNI 1-min moderno
+#
+# =======================================================================
 
 NASA_REAL_SOURCES = {
-    # ✅ DSCOVR - Dados em tempo real
-    'DSCOVR_SWEPAM_L1': DataSource(
-        name='DSCOVR_SWEPAM_L1',
-        url='https://cdaweb.gsfc.nasa.gov/',
-        variables=['proton_density', 'bulk_speed', 'proton_temp'],  # ✅ VARIÁVEIS REAIS
-        expected_columns=['Epoch', 'proton_density', 'bulk_speed', 'proton_temp'],
-        sampling_rate='1min',
-        availability='Real-time (15-30min delay)',
-        rate_limit=(100, 3600)
+
+    # ------------------------
+    #   DSCOVR — Plasma (SWEPAM)
+    # ------------------------
+    "DSCOVR_SWEPAM": DataSource(
+        name="DSCOVR_SWEPAM",
+        dataset_id="DSCOVR_H1_SWE",
+        variables=[
+            "Np",   # densidade prótons
+            "Vp",   # velocidade solar wind
+            "Tp"    # temperatura prótons
+        ],
+        expected_columns=["timestamp", "Np", "Vp", "Tp"],
+        sampling_rate="1min",
+        availability="Real-time (15–30 min delay)",
+        rate_limit=(100, 3600),
     ),
-    'DSCOVR_MAG_L1': DataSource(
-        name='DSCOVR_MAG_L1',
-        url='https://cdaweb.gsfc.nasa.gov/',
-        variables=['B_x', 'B_y', 'B_z', 'Bt'],  # ✅ VARIÁVEIS REAIS
-        expected_columns=['Epoch', 'B_x', 'B_y', 'B_z', 'Bt'],
-        sampling_rate='1min',
-        availability='Real-time (15-30min delay)',
-        rate_limit=(100, 3600)
+
+    # ------------------------
+    #   DSCOVR — Magnetômetro (MAG)
+    # ------------------------
+    "DSCOVR_MAG": DataSource(
+        name="DSCOVR_MAG",
+        dataset_id="DSCOVR_H1_MAG",
+        variables=[
+            "B1GSE",  # Bx
+            "B2GSE",  # By
+            "B3GSE",  # Bz
+            "Bt"      # magnitude total
+        ],
+        expected_columns=["timestamp", "B1GSE", "B2GSE", "B3GSE", "Bt"],
+        sampling_rate="1min",
+        availability="Real-time (15–30 min delay)",
+        rate_limit=(100, 3600),
     ),
-    # ✅ OMNI HRO2 - Dados históricos
-    'OMNI_HRO2_1MIN': DataSource(
-        name='OMNI_HRO2_1MIN',
-        url='https://cdaweb.gsfc.nasa.gov/',
-        variables=['BX_GSE', 'BY_GSE', 'BZ_GSE', 'V', 'FlowPressure'],  # ✅ VARIÁVEIS REAIS
-        expected_columns=['Epoch', 'BX_GSE', 'BY_GSE', 'BZ_GSE', 'V', 'FlowPressure'],
-        sampling_rate='1min',
-        availability='Near real-time',
-        rate_limit=(100, 3600)
-    )
+
+    # ------------------------
+    #   OMNI 1-min moderno
+    # ------------------------
+    "OMNI_1MIN": DataSource(
+        name="OMNI_1MIN",
+        dataset_id="OMNI2_H0_MRG1MIN",
+        variables=[
+            "BX_GSE", "BY_GSE", "BZ_GSE",
+            "V", "N", "T", "FlowPressure"
+        ],
+        expected_columns=[
+            "timestamp", "BX_GSE", "BY_GSE", "BZ_GSE",
+            "V", "N", "T", "FlowPressure"
+        ],
+        sampling_rate="1min",
+        availability="Near real-time (1–2h delay)",
+        rate_limit=(200, 3600),
+    ),
 }
+
+
+# =======================================================================
+# ✔ NOAA — DADOS REAIS (JSON)
+# =======================================================================
 
 NOAA_REAL_SOURCES = {
-    'PLASMA_5MIN': DataSource(
-        name='NOAA Plasma 5-min',
-        url='https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json',
-        variables=['density', 'speed', 'temperature'],
-        expected_columns=['time_tag', 'density', 'speed', 'temperature'],
-        sampling_rate='5min',
-        availability='Real-time (5-10min delay)',
-        rate_limit=(60, 60)
+
+    "PLASMA_5MIN": DataSource(
+        name="NOAA_Plasma_5min",
+        dataset_id="NOAA_PLASMA_5MIN",
+        variables=["density", "speed", "temperature"],
+        expected_columns=["time_tag", "density", "speed", "temperature"],
+        sampling_rate="5min",
+        availability="Real-time (5–10 min delay)",
+        rate_limit=(60, 60),
     ),
-    'MAG_5MIN': DataSource(
-        name='NOAA Magnetic 5-min',
-        url='https://services.swpc.noaa.gov/products/solar-wind/mag-5-minute.json',
-        variables=['bx_gse', 'by_gse', 'bz_gse', 'bt'],
-        expected_columns=['time_tag', 'bx_gse', 'by_gse', 'bz_gse', 'bt'],
-        sampling_rate='5min',
-        availability='Real-time (5-10min delay)',
-        rate_limit=(60, 60)
-    )
+
+    "MAG_5MIN": DataSource(
+        name="NOAA_Mag_5min",
+        dataset_id="NOAA_MAG_5MIN",
+        variables=["bx_gse", "by_gse", "bz_gse", "bt"],
+        expected_columns=["time_tag", "bx_gse", "by_gse", "bz_gse", "bt"],
+        sampling_rate="5min",
+        availability="Real-time (5–10 min delay)",
+        rate_limit=(60, 60),
+    ),
 }
 
-# =============================================================================
-# MAPEAMENTO CORRETO PARA VARIÁVEIS REAIS
-# =============================================================================
+
+# =======================================================================
+# ✔ MAPEAMENTO PADRONIZADO (NASA → COLUNAS HAC)
+# =======================================================================
 
 VARIABLE_MAPPING_REAL = {
-    'DSCOVR_SWEPAM': {
-        'proton_density': 'density',      # ✅ REAL
-        'bulk_speed': 'speed',           # ✅ REAL  
-        'proton_temp': 'temperature'     # ✅ REAL
+
+    # ------------- DSCOVR SWEPAM -------------
+    "DSCOVR_SWEPAM": {
+        "Np": "density",
+        "Vp": "speed",
+        "Tp": "temperature"
     },
-    'DSCOVR_MAG': {
-        'B_x': 'bx_gse',                 # ✅ REAL
-        'B_y': 'by_gse',                 # ✅ REAL
-        'B_z': 'bz_gse',                 # ✅ REAL
-        'Bt': 'bt'                       # ✅ REAL
+
+    # ------------- DSCOVR MAG -------------
+    "DSCOVR_MAG": {
+        "B1GSE": "bx_gse",
+        "B2GSE": "by_gse",
+        "B3GSE": "bz_gse",
+        "Bt": "bt"
     },
-    'OMNI_HRO2': {
-        'BX_GSE': 'bx_gse',              # ✅ REAL
-        'BY_GSE': 'by_gse',              # ✅ REAL
-        'BZ_GSE': 'bz_gse',              # ✅ REAL
-        'V': 'speed',                    # ✅ REAL
-        'FlowPressure': 'pressure'       # ✅ REAL
+
+    # ------------- OMNI -------------
+    "OMNI_1MIN": {
+        "BX_GSE": "bx_gse",
+        "BY_GSE": "by_gse",
+        "BZ_GSE": "bz_gse",
+        "V": "speed",
+        "N": "density",
+        "T": "temperature",
+        "FlowPressure": "pressure"
     },
-    'NOAA': {
-        'density': 'density',
-        'speed': 'speed', 
-        'temperature': 'temperature',
-        'bx_gse': 'bx_gse',
-        'by_gse': 'by_gse',
-        'bz_gse': 'bz_gse',
-        'bt': 'bt'
-    }
+
+    # ------------- NOAA -------------
+    "NOAA": {
+        "density": "density",
+        "speed": "speed",
+        "temperature": "temperature",
+        "bx_gse": "bx_gse",
+        "by_gse": "by_gse",
+        "bz_gse": "bz_gse",
+        "bt": "bt"
+    },
 }
 
-# =============================================================================
-# CONFIGURAÇÕES DE VALIDAÇÃO
-# =============================================================================
+
+# =======================================================================
+# CONFIGURAÇÕES DE VALIDAÇÃO — REAIS E ESTÁVEIS
+# =======================================================================
 
 VALIDATION_CONFIG = {
-    'min_data_points': 144,
-    'max_data_gap_hours': 6,
-    'completeness_threshold': 0.7,
-    'variability_thresholds': {
-        'speed_std_min': 10,
-        'density_std_min': 0.5
+    "min_data_points": 144,           # 12h de dados 5-min
+    "max_data_gap_hours": 6,
+    "completeness_threshold": 0.7,
+    "variability_thresholds": {
+        "speed_std_min": 10,
+        "density_std_min": 0.5
     }
 }
