@@ -1,0 +1,7 @@
+xgboost
+numpy
+pandas
+requests
+scikit-learn
+plotly
+python-dateutil
