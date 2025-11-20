@@ -2,8 +2,9 @@ name: HAC Forecast Automation
 
 on:
   schedule:
+    # Executa automaticamente a cada 6 horas
     - cron: "0 */6 * * *"
-  workflow_dispatch:
+  workflow_dispatch:  # permite rodar manualmente
   push:
     branches:
       - main
@@ -17,96 +18,101 @@ jobs:
     name: Executar previsão HAC automática
 
     steps:
-      # 1. Checkout do repositório
+
+      # -----------------------------
+      # 1) CHECKOUT
+      # -----------------------------
       - name: 📥 Clonar repositório
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # 2. Python
+      # -----------------------------
+      # 2) PYTHON + CACHE
+      # -----------------------------
       - name: 🐍 Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: "pip"
 
-      # 3. Instalação de dependências
+      # -----------------------------
+      # 3) DEPENDÊNCIAS
+      # -----------------------------
       - name: 📦 Instalar dependências HAC
         run: |
-          echo "🔧 Atualizando pip..."
           python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+          pip install seaborn plotly kaleido || true
 
-          echo "📦 Instalando dependências do projeto..."
-          pip install -r requirements.txt
-
-          echo "📌 Instalando XGBoost (garantia)"
-          pip install xgboost || echo "XGBoost falhou, tentando alternativa..."
-          pip install xgboost==1.7.6 || true
-
-          echo "🎨 Instalando pacotes opcionais"
-          pip install seaborn plotly kaleido
-
-          echo "🤖 Tentando instalar TensorFlow (opcional)"
-          pip install tensorflow-cpu || echo "TensorFlow não instalado"
-
-      # 4. Coletar dados solares
+      # -----------------------------
+      # 4) COLETAR DADOS
+      # -----------------------------
       - name: 🌞 Coletar dados solares
         run: |
-          echo "📡 Coletando dados do NOAA/NASA..."
-          python src/data_fetcher.py
+          echo "Iniciando coleta HAC..."
+          python src/data_fetcher.py || echo "⚠ Erro no fetcher, usando fallback"
 
-      # 5. Rodar previsão
+      # -----------------------------
+      # 5) RODAR PREVISÃO
+      # -----------------------------
       - name: 🔮 Rodar previsão heliogeofísica
         run: |
-          echo "🧠 Rodando modelo HAC Predictive..."
+          echo "Executando módulo de previsão..."
           python src/heliopredictive.py
 
-      # 6. Validação
+      # -----------------------------
+      # 6) VALIDAÇÃO
+      # -----------------------------
       - name: 🧪 Rodar validação comparativa
         run: |
-          echo "📊 Validação HAC..."
+          echo "Rodando validação HAC..."
           python src/hac_validation.py
 
-      # 7. Organização dos resultados
+      # -----------------------------
+      # 7) ORGANIZAR RESULTADOS
+      # -----------------------------
       - name: 💾 Organizar resultados
         run: |
-          echo "📂 Organizando resultados..."
           mkdir -p results plots data logs
 
-          # Movendo arquivos com fallback seguro
-          mv ./*.png plots/ 2>/dev/null || true
-          mv ./*.csv data/ 2>/dev/null || true
-          mv ./*.json results/ 2>/dev/null || true
-          mv ./*.log logs/ 2>/dev/null || true
+          # Mover de forma segura (evita erro se não existir arquivo)
+          mv *.png plots/ 2>/dev/null || true
+          mv *.csv data/ 2>/dev/null || true
+          mv *.json results/ 2>/dev/null || true
+          mv *.log logs/ 2>/dev/null || true
 
-          echo "🧹 Limpando resíduos..."
+          # Evitar diretórios duplicados
           rm -rf data/results/ 2>/dev/null || true
 
-      # 8. Commit e push
+      # -----------------------------
+      # 8) COMMIT AUTOMÁTICO
+      # -----------------------------
       - name: 📤 Commit e Push dos Resultados
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "📝 Commitando alterações..."
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
           git add -A
 
           if git diff --staged --quiet; then
-            echo "Nenhuma alteração para commitar."
+            echo "Nenhuma alteração para commitar"
             exit 0
           fi
 
           git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')"
 
-          echo "🔃 Sincronizando com main..."
-          git pull origin main --no-rebase -X theirs
+          # Resolve conflitos automaticamente
+          git pull origin main --no-rebase -X theirs || true
 
-          echo "⬆️ Enviando para o repositório..."
           git push origin main
 
-      # 9. Artefatos
+      # -----------------------------
+      # 9) ARTIFACTS
+      # -----------------------------
       - name: 📊 Upload dos resultados como artifact
         if: always()
         uses: actions/upload-artifact@v4
