@@ -1,0 +1,87 @@
+# Configuração do Projeto Heliogeophysical - Versão 3.0
+project:
+  name: "Heliogeophysical Adaptive Coupling"
+  version: "3.0.0"
+  description: "Sistema avançado com ML preditivo e múltiplas fontes"
+
+data_sources:
+  noaa:
+    base_url: "https://services.swpc.noaa.gov"
+    endpoints:
+      plasma: "/products/solar-wind/plasma-5-minute.json"
+      mag: "/products/solar-wind/mag-5-minute.json"
+      dscovr: "/products/solar-wind/dscovr_1m.json"
+      alerts: "/products/alerts.json"
+    timeout: 30
+    retry_attempts: 3
+
+  nasa_cdaweb:
+    base_url: "https://cdaweb.gsfc.nasa.gov"
+    datasets:
+      dscovr_swepam: "DSCOVR_H1_SWEPAM"
+      dscovr_mag: "DSCOVR_H1_MAG"
+      omni_1min: "OMNI_HRO_1MIN"
+      ace_mag: "AC_H0_MFI"
+      ace_swepam: "AC_H0_SWE"
+      wind_mfi: "WI_H0_MFI"
+      wind_swe: "WI_H0_SWE"
+    timeout: 60
+
+processing:
+  resample_frequency: "5T"
+  interpolation_method: "linear"
+  rolling_window: "1H"
+  features:
+    - rolling_mean
+    - rolling_std
+    - temporal_features
+    - derived_parameters
+    - ml_features
+
+detection:
+  thresholds:
+    strong_negative_bz: -10.0
+    high_speed_stream: 600.0
+    density_spike: 20.0
+    temperature_anomaly: 100000.0
+  min_event_duration: "5 minutes"
+  advanced_methods:
+    anomaly_detection: true
+    temporal_clustering: true
+    pattern_recognition: true
+    ml_integration: true
+
+machine_learning:
+  prediction_horizon_hours: 3
+  model_path: "models/heliogeophysical_model.pkl"
+  retrain_interval_hours: 24
+  min_training_samples: 100
+  min_events_for_training: 5
+  features:
+    - basic_parameters
+    - temporal_features
+    - rolling_statistics
+    - derived_parameters
+    - interaction_terms
+
+storage:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  live_data: "data/live"
+  model_storage: "models"
+  backup:
+    enabled: true
+    keep_days: 7
+
+logging:
+  level: "INFO"
+  file: "logs/heliogeophysical.log"
+  max_size_mb: 100
+  backup_count: 5
+  format: "%(asctime)s | %(levelname)-8s | %(message)s"
+
+monitoring:
+  enable_health_checks: true
+  metrics_port: 9090
+  alert_on_failures: true
+  performance_tracking: true

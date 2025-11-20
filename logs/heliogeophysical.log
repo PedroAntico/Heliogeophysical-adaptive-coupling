@@ -1,0 +1,10 @@
+2025-11-20 00:11:30,215 | INFO     | Iniciando pipeline de acoplamento heliogeofísico
+2025-11-20 00:11:30,215 | INFO     | Coletando dados REALTIME (simulado)
+2025-11-20 00:11:30,215 | INFO     | Processando séries temporais
+2025-11-20 00:11:30,215 | INFO     | Detectando eventos de interesse
+2025-11-20 00:11:30,216 | INFO     | Pipeline concluído — 2 eventos detectados
+2025-11-20 00:49:15,699 | INFO     | Iniciando pipeline de acoplamento heliogeofísico
+2025-11-20 00:49:15,699 | INFO     | Coletando dados REALTIME (simulado)
+2025-11-20 00:49:15,699 | INFO     | Processando séries temporais
+2025-11-20 00:49:15,700 | INFO     | Detectando eventos de interesse
+2025-11-20 00:49:15,700 | INFO     | Pipeline concluído — 2 eventos detectados

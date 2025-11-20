@@ -1,42 +1,7 @@
-# Núcleo matemático e análise
-numpy
-pandas
-matplotlib
-scipy
-scikit-learn>=1.2.2
-xgboost
-
-# Comunicação e coleta de dados solares
 requests
-beautifulsoup4
-lxml
-
-# Wavelets e multifractais
-PyWavelets
-statsmodels
-
-# Automação e logging
-tqdm
+pandas
+numpy
+scikit-learn
+pyyaml
+matplotlib
 loguru
-
-# Validação e visualização científica
-seaborn
-plotly
-kaleido  # Para exportar plotly como imagens
-
-# Modelos avançados (opcionais com fallback)
-tensorflow-cpu  # Versão mais leve para CI/CD
-torch
-
-# APIs específicas para dados solares
-sunpy
-heliopy
-astropy
-
-# Otimização e paralelização
-joblib
-dask
-
-# Formatação e relatórios
-jinja2  # Para templates de relatórios
-pytest  # Para testes automatizados
