@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-- name: 📦 Instalar dependências
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+- - name: 📦 Upgrade pip
+      run: python -m pip install --upgrade pip
+
+    - name: 📦 Instalar dependências
+      run: pip install -r requirements.txt
 """
 Heliogeophysical Adaptive Coupling 3.0 - OPERACIONAL
 Dados reais NOAA + estrutura ML pronta
