@@ -2,9 +2,8 @@ name: HAC Forecast Automation
 
 on:
   schedule:
-    # Executa automaticamente a cada 6 horas
     - cron: "0 */6 * * *"
-  workflow_dispatch:  # permite rodar manualmente
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -18,71 +17,96 @@ jobs:
     name: Executar previsão HAC automática
 
     steps:
+      # 1. Checkout do repositório
       - name: 📥 Clonar repositório
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # 2. Python
       - name: 🐍 Configurar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
+      # 3. Instalação de dependências
       - name: 📦 Instalar dependências HAC
         run: |
+          echo "🔧 Atualizando pip..."
           python -m pip install --upgrade pip
+
+          echo "📦 Instalando dependências do projeto..."
           pip install -r requirements.txt
+
+          echo "📌 Instalando XGBoost (garantia)"
+          pip install xgboost || echo "XGBoost falhou, tentando alternativa..."
+          pip install xgboost==1.7.6 || true
+
+          echo "🎨 Instalando pacotes opcionais"
           pip install seaborn plotly kaleido
+
+          echo "🤖 Tentando instalar TensorFlow (opcional)"
           pip install tensorflow-cpu || echo "TensorFlow não instalado"
 
+      # 4. Coletar dados solares
       - name: 🌞 Coletar dados solares
         run: |
+          echo "📡 Coletando dados do NOAA/NASA..."
           python src/data_fetcher.py
 
+      # 5. Rodar previsão
       - name: 🔮 Rodar previsão heliogeofísica
         run: |
+          echo "🧠 Rodando modelo HAC Predictive..."
           python src/heliopredictive.py
 
+      # 6. Validação
       - name: 🧪 Rodar validação comparativa
         run: |
+          echo "📊 Validação HAC..."
           python src/hac_validation.py
 
+      # 7. Organização dos resultados
       - name: 💾 Organizar resultados
         run: |
+          echo "📂 Organizando resultados..."
           mkdir -p results plots data logs
-          
-          # Mover arquivos de forma mais específica
-          [ -f "*.png" ] && mv *.png plots/ 2>/dev/null || true
-          [ -f "*.csv" ] && mv *.csv data/ 2>/dev/null || true
-          [ -f "*.json" ] && mv *.json results/ 2>/dev/null || true
-          [ -f "*.log" ] && mv *.log logs/ 2>/dev/null || true
-          
-          # Limpar qualquer diretório duplicado
+
+          # Movendo arquivos com fallback seguro
+          mv ./*.png plots/ 2>/dev/null || true
+          mv ./*.csv data/ 2>/dev/null || true
+          mv ./*.json results/ 2>/dev/null || true
+          mv ./*.log logs/ 2>/dev/null || true
+
+          echo "🧹 Limpando resíduos..."
           rm -rf data/results/ 2>/dev/null || true
 
+      # 8. Commit e push
       - name: 📤 Commit e Push dos Resultados
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "📝 Commitando alterações..."
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Primeiro commitar as mudanças locais
+
           git add -A
+
           if git diff --staged --quiet; then
-            echo "Nenhuma alteração para commitar"
+            echo "Nenhuma alteração para commitar."
             exit 0
           fi
-          
+
           git commit -m "🌍 Atualização automática: Previsões HAC + Validação $(date +'%Y-%m-%d %H:%M')"
-          
-          # Fazer pull com merge strategy para resolver conflitos
+
+          echo "🔃 Sincronizando com main..."
           git pull origin main --no-rebase -X theirs
-          
-          # Fazer push
+
+          echo "⬆️ Enviando para o repositório..."
           git push origin main
 
+      # 9. Artefatos
       - name: 📊 Upload dos resultados como artifact
         if: always()
         uses: actions/upload-artifact@v4
