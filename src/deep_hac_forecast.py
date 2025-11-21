@@ -39,40 +39,52 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # ============================================================
 
 def load_and_validate_real_data():
-    """Carrega dados reais com verificações FLEXÍVEIS"""
-    data_folders = ["data_real", "data/raw", "data/processed", "data"]
+    """
+    Carrega dados priorizando o dataset completo (solar_data_latest.csv).
+    Se não existir, tenta os dados reais.
+    """
+    # 1 — PRIORIDADE TOTAL: dataset completo
+    full_dataset_path = "data/solar_data_latest.csv"
     
+    if os.path.exists(full_dataset_path):
+        logger.info(f"📥 Carregando dataset completo: {full_dataset_path}")
+        df = pd.read_csv(full_dataset_path)
+
+        if df.empty:
+            logger.error("❌ Dataset completo vazio!")
+        else:
+            logger.info(f"✅ Dataset completo carregado: {len(df)} registros")
+            logger.info(f"📋 Colunas: {list(df.columns)}")
+            return df
+
+    # 2 — Caso o dataset completo falhe, tentar dados REAL
+    data_folders = ["data_real", "data/raw", "data/processed"]
+
     for folder in data_folders:
         if not os.path.exists(folder):
-            logger.warning(f"Pasta {folder} não encontrada")
             continue
-            
-        files = sorted(
-            [f for f in os.listdir(folder) if f.endswith(".csv")],
-            reverse=True
-        )
-        
+
+        files = sorted([f for f in os.listdir(folder) if f.endswith(".csv")], reverse=True)
+
         if files:
             latest_file = os.path.join(folder, files[0])
-            logger.info(f"📥 Carregando dados de: {latest_file}")
-            
+            logger.info(f"📥 Tentando dados reais: {latest_file}")
+
             try:
                 df = pd.read_csv(latest_file)
-                
-                # Validação BÁSICA - apenas verifica se não está vazio
-                if df.empty:
-                    logger.warning(f"Arquivo {latest_file} vazio")
+
+                if len(df) < 50:
+                    logger.warning(f"⚠️ Dados reais insuficientes ({len(df)} registros).")
                     continue
-                
-                logger.info(f"✅ Dados carregados: {len(df)} registros, {len(df.columns)} colunas")
-                logger.info(f"📋 Colunas disponíveis: {list(df.columns)}")
+
+                logger.info(f"✅ Dados reais carregados: {len(df)} registros")
                 return df
-                
+
             except Exception as e:
                 logger.error(f"Erro ao carregar {latest_file}: {e}")
                 continue
-    
-    raise FileNotFoundError("❌ Nenhum dado encontrado em nenhuma pasta")
+
+    raise FileNotFoundError("❌ Nenhum dataset válido encontrado (nem completo nem real).")
 
 def create_advanced_sequences(df, features, target_col='speed', 
                             horizon_hours=1, lookback=48, step=1):
