@@ -1,135 +1,90 @@
 """
-src/deep_hac_forecast.py
-
-HAC Deep Forecast - LSTM e GRU
-Fase 2: modelos de Deep Learning para previsões de 1h, 3h, 6h e 12h
-usando dados reais do vento solar (NOAA / NASA / HAC).
-
-Não mexe em nada do pipeline atual. É um módulo de pesquisa.
+deep_hac_forecast.py
+HAC 3.0 — Previsão Deep Learning (LSTM + GRU)
 """
 
 import os
-import logging
-from datetime import datetime, timedelta
-
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_squared_error, r2_score
+import logging
+from datetime import datetime
 
-# Tentativa de importar TensorFlow/Keras
-try:
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, GRU, Dense
-    from tensorflow.keras.callbacks import EarlyStopping
-    TF_AVAILABLE = True
-except Exception as e:
-    TF_AVAILABLE = False
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, GRU, Dense, Dropout
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - HAC_Deep - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("HAC_Deep")
 
 
 # ============================================================
-# 1) Carregamento de dados
+# FUNÇÕES AUXILIARES
 # ============================================================
 
-def load_solar_data():
+def load_real_data():
+    """Carrega o dataset real mais recente de data_real/"""
+    folder = "data_real"
+    if not os.path.exists(folder):
+        raise FileNotFoundError("A pasta data_real/ não existe. Execute o coletor real primeiro.")
+
+    files = sorted(
+        [f for f in os.listdir(folder) if f.endswith(".csv")],
+        reverse=True
+    )
+
+    if not files:
+        raise FileNotFoundError("Nenhum arquivo CSV encontrado em data_real/")
+
+    latest = os.path.join(folder, files[0])
+    logger.info(f"📥 Carregando dados de: {latest}")
+
+    df = pd.read_csv(latest)
+    df = df.dropna()
+
+    return df
+
+
+def create_sequences(df, features, horizon_hours=1, lookback=48):
     """
-    Tenta carregar dados reais de arquivos já gerados pelo HAC.
-    Prioridade:
-      1) data/solar_data_latest.csv
-      2) data/solar_data_history.csv (se existir)
+    Constrói sequências para treino.
     """
-    candidates = [
-        "data/solar_data_latest.csv",
-        "data/solar_data_history.csv"
-    ]
+    logger.info(f"➡ Construindo sequências (lookback={lookback}, horizon={horizon_hours}h)")
 
-    for path in candidates:
-        if os.path.exists(path):
-            logger.info(f"📂 Carregando dados de: {path}")
-            df = pd.read_csv(path)
-            break
-    else:
-        raise FileNotFoundError(
-            "Nenhum arquivo de dados encontrado. "
-            "Esperado: data/solar_data_latest.csv ou data/solar_data_history.csv"
-        )
+    X, y = [], []
+    data = df[features].values
+    speed = df["speed"].values
 
-    # Normalizar coluna de tempo
-    time_col = None
-    for col in ["time_tag", "timestamp", "date"]:
-        if col in df.columns:
-            time_col = col
-            break
-
-    if time_col is None:
-        raise ValueError("Nenhuma coluna temporal encontrada (time_tag/timestamp/date).")
-
-    df[time_col] = pd.to_datetime(df[time_col])
-    df = df.sort_values(time_col).reset_index(drop=True)
-    df = df.rename(columns={time_col: "time_tag"})
-
-    # Selecionar features principais, se existirem
-    feature_candidates = [
-        "speed", "density", "temperature",
-        "bx_gse", "by_gse", "bz_gse", "bt"
-    ]
-    features = [c for c in feature_candidates if c in df.columns]
-
-    if "speed" not in features:
-        raise ValueError("Coluna 'speed' é obrigatória para prever. Não encontrada no dataset.")
-
-    logger.info(f"✅ Dados carregados: {len(df)} registros")
-    logger.info(f"📊 Features disponíveis: {features}")
-
-    # Remover linhas com muitos NaNs nas features
-    df = df[["time_tag"] + features].dropna().reset_index(drop=True)
-
-    return df, features
-
-
-# ============================================================
-# 2) Construção de janelas temporais (sequências)
-# ============================================================
-
-def make_supervised_sequences(df, feature_cols, target_col, lookback_steps, horizon_steps):
-    """
-    Constrói dataset supervisonado para seq2one:
-        X: janelas de [t-lookback+1 ... t]
-        y: valor em t + horizon
-    """
-
-    values = df[feature_cols].values
-    target = df[target_col].shift(-horizon_steps).values
-    times = df["time_tag"].values
-
-    X, y, t_out = [], [], []
-
-    # i = índice do "tempo atual" (t)
-    for i in range(lookback_steps, len(df) - horizon_steps):
-        X.append(values[i - lookback_steps:i])
-        y.append(target[i])
-        t_out.append(times[i])
+    for i in range(lookback, len(df) - horizon_hours):
+        X.append(data[i - lookback:i])
+        y.append(speed[i + horizon_hours])
 
     X = np.array(X)
     y = np.array(y)
-    t_out = np.array(t_out)
 
-    return X, y, t_out
+    return X, y
 
 
 # ============================================================
-# 3) Criação dos modelos LSTM e GRU
+# MODELOS
 # ============================================================
 
 def build_lstm(input_shape):
     model = Sequential([
-        LSTM(64, input_shape=input_shape),
-        Dense(32, activation="relu"),
+        LSTM(64, return_sequences=True, input_shape=input_shape),
+        Dropout(0.2),
+        LSTM(32),
+        Dense(16, activation="relu"),
         Dense(1)
     ])
     model.compile(optimizer="adam", loss="mse")
@@ -138,8 +93,10 @@ def build_lstm(input_shape):
 
 def build_gru(input_shape):
     model = Sequential([
-        GRU(64, input_shape=input_shape),
-        Dense(32, activation="relu"),
+        GRU(64, return_sequences=True, input_shape=input_shape),
+        Dropout(0.2),
+        GRU(32),
+        Dense(16, activation="relu"),
         Dense(1)
     ])
     model.compile(optimizer="adam", loss="mse")
@@ -147,154 +104,78 @@ def build_gru(input_shape):
 
 
 # ============================================================
-# 4) Treino e avaliação para um horizonte
+# TREINAMENTO
 # ============================================================
 
-def train_deep_for_horizon(df, features, horizon_hours, freq_minutes=5, lookback_hours=3):
+def train_deep_for_horizon(df, features, horizon_h):
     """
-    Treina LSTM e GRU para um determinado horizonte de previsão.
-    - df: dataframe com colunas ['time_tag'] + features
-    - features: lista de colunas usadas como entrada
-    - horizon_hours: horizonte em horas (1, 3, 6, 12...)
-    - freq_minutes: resolução temporal (5 min padrão)
-    - lookback_hours: histórico usado como entrada (padrão: 3h)
+    Treina modelos LSTM e GRU para um horizonte específico.
     """
 
-    if not TF_AVAILABLE:
-        logger.warning("TensorFlow/Keras não disponível. Pulei DL.")
-        return None
+    logger.info("")
+    logger.info("========================================================")
+    logger.info(f"🌙 Previsão Deep HAC — Horizonte {horizon_h}h")
+    logger.info("========================================================")
 
-    logger.info("==============================================")
-    logger.info(f"🕒 Horizonte: {horizon_hours}h")
-    logger.info("==============================================")
+    lookback = 48  # 4h de histórico
 
-    steps_per_hour = int(60 / freq_minutes)
-    horizon_steps = horizon_hours * steps_per_hour
-    lookback_steps = lookback_hours * steps_per_hour
+    # Criar sequências
+    X, y = create_sequences(df, features, horizon_hours=horizon_h, lookback=lookback)
 
-    if len(df) < (lookback_steps + horizon_steps + 10):
-        logger.warning("Dados insuficientes para este horizonte. Pulando.")
-        return None
-
-    # Construir sequências
-    X, y, t_out = make_supervised_sequences(
-        df, feature_cols=features, target_col="speed",
-        lookback_steps=lookback_steps,
-        horizon_steps=horizon_steps
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False
     )
 
-    logger.info(f"📦 Sequências construídas: {X.shape[0]} amostras, "
-                f"lookback={lookback_hours}h, horizon={horizon_hours}h")
+    logger.info(f"Treinando LSTM...")
+    lstm = build_lstm((lookback, len(features)))
+    lstm.fit(X_train, y_train, epochs=12, batch_size=32, verbose=0)
 
-    # Split temporal: 80% treino, 20% teste
-    split_idx = int(0.8 * len(X))
-    X_train, y_train = X[:split_idx], y[:split_idx]
-    X_test, y_test = X[split_idx:], y[split_idx:]
-    t_test = t_out[split_idx:]
+    y_pred_lstm = lstm.predict(X_test).flatten()
 
-    input_shape = (X_train.shape[1], X_train.shape[2])
+    # RMSE corrigido (sem 'squared')
+    rmse_lstm = np.sqrt(mean_squared_error(y_test, y_pred_lstm))
+    logger.info(f"📘 LSTM | RMSE: {rmse_lstm:.3f}")
 
-    # Callbacks
-    cb = [
-        EarlyStopping(
-            monitor="val_loss",
-            patience=3,
-            restore_best_weights=True
-        )
-    ]
+    logger.info(f"Treinando GRU...")
+    gru = build_gru((lookback, len(features)))
+    gru.fit(X_train, y_train, epochs=12, batch_size=32, verbose=0)
 
-    results = {}
+    y_pred_gru = gru.predict(X_test).flatten()
 
-    # ----------------- LSTM -----------------
-    logger.info("🔧 Treinando LSTM...")
-    lstm = build_lstm(input_shape)
-    lstm.fit(
-        X_train, y_train,
-        epochs=20,
-        batch_size=32,
-        validation_split=0.1,
-        callbacks=cb,
-        verbose=0
-    )
+    # RMSE corrigido
+    rmse_gru = np.sqrt(mean_squared_error(y_test, y_pred_gru))
+    logger.info(f"📗 GRU  | RMSE: {rmse_gru:.3f}")
 
-    y_pred_lstm = lstm.predict(X_test, verbose=0).flatten()
-    rmse_lstm = mean_squared_error(y_test, y_pred_lstm, squared=False)
-    r2_lstm = r2_score(y_test, y_pred_lstm)
-
-    logger.info(f"📈 LSTM  RMSE={rmse_lstm:.3f}  R²={r2_lstm:.3f}")
-
-    results["LSTM"] = {
-        "rmse": rmse_lstm,
-        "r2": r2_lstm,
-        "y_true": y_test,
-        "y_pred": y_pred_lstm,
-        "time_tag": t_test,
+    return {
+        "horizon": horizon_h,
+        "rmse_lstm": rmse_lstm,
+        "rmse_gru": rmse_gru
     }
-
-    # ----------------- GRU -----------------
-    logger.info("🔧 Treinando GRU...")
-    gru = build_gru(input_shape)
-    gru.fit(
-        X_train, y_train,
-        epochs=20,
-        batch_size=32,
-        validation_split=0.1,
-        callbacks=cb,
-        verbose=0
-    )
-
-    y_pred_gru = gru.predict(X_test, verbose=0).flatten()
-    rmse_gru = mean_squared_error(y_test, y_pred_gru, squared=False)
-    r2_gru = r2_score(y_test, y_pred_gru)
-
-    logger.info(f"📈 GRU   RMSE={rmse_gru:.3f}  R²={r2_gru:.3f}")
-
-    results["GRU"] = {
-        "rmse": rmse_gru,
-        "r2": r2_gru,
-        "y_true": y_test,
-        "y_pred": y_pred_gru,
-        "time_tag": t_test,
-    }
-
-    return results
 
 
 # ============================================================
-# 5) Runner principal
+# EXECUÇÃO PRINCIPAL
 # ============================================================
 
 def run_deep_hac():
-    if not TF_AVAILABLE:
-        print("❌ TensorFlow/Keras não está disponível neste ambiente.")
-        print("   Instale com: pip install tensorflow-cpu")
-        return
+    logger.info("🚀 Sistema Deep HAC iniciado")
+    df = load_real_data()
 
-    df, features = load_solar_data()
+    features = ["speed", "density", "temperature", "bx_gse", "by_gse", "bz_gse"]
+    df = df.dropna(subset=features)
 
-    horizons = [1, 3, 6, 12]  # horas
-    all_results = {}
+    results = []
 
-    for h in horizons:
-        res = train_deep_for_horizon(df, features, horizon_hours=h)
-        if res is not None:
-            all_results[h] = res
+    for h in [1, 3, 6, 12]:
+        res = train_deep_for_horizon(df, features, h)
+        results.append(res)
 
-    if not all_results:
-        print("⚠ Nenhum horizonte foi treinado (dados insuficientes ou erro).")
-        return
-
-    print("\n============================================")
-    print(" RESUMO – HAC DEEP FORECAST (LSTM/GRU)")
-    print("============================================\n")
-
-    for h, models in all_results.items():
-        print(f"🕒 Horizonte {h}h:")
-        for name, r in models.items():
-            print(f"  • {name:4s} | RMSE: {r['rmse']:.3f} | R²: {r['r2']:.3f}")
-        print()
-
-    print("✅ Deep Learning executado com sucesso.")
+    logger.info("\n===== RESULTADOS GERAIS =====")
+    for r in results:
+        logger.info(
+            f"H{r['horizon']}h -> LSTM: {r['rmse_lstm']:.3f} | GRU: {r['rmse_gru']:.3f}"
+        )
 
 
 if __name__ == "__main__":
