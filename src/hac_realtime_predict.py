@@ -151,8 +151,12 @@ def run_realtime_hac():
         for model_type in models:
             predictions[model_type] = {}
             for horizon_h, model in models[model_type].items():
-                pred_scaled = model.predict(seq, verbose=0)[0][0]
-                pred_unscaled = scaler.inverse_transform([[pred_scaled]])[0][0]
+                target = df["speed"] if "speed" in df.columns else df[features[0]]
+
+mean = target.mean()
+std = target.std()
+
+pred_unscaled = float(pred_scaled * std + mean)
                 predictions[model_type][horizon_h] = float(pred_unscaled)
 
         current = {
