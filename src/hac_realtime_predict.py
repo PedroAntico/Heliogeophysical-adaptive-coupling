@@ -1,7 +1,7 @@
 """
 hac_realtime_predict.py
 Previsor em tempo real + Alertas de Tempestades Solares
-Versão corrigida — compatível com HAC Deep Learning
+Versão FINAL — compatível com modelos .keras (HAC Deep Learning)
 """
 
 import os
@@ -26,13 +26,13 @@ logger = logging.getLogger("HAC_RT")
 # ============================================================
 
 def safe_timestamp(obj):
-    """Converte qualquer Timestamp/Datetime para string antes de salvar."""
+    """Converte datetime/Timestamp para string JSON-friendly."""
     if isinstance(obj, (datetime, pd.Timestamp)):
         return obj.strftime("%Y-%m-%d %H:%M:%S")
     return obj
 
 def json_safe(data):
-    """Converte recursivamente todos os valores para tipos permitidos no JSON."""
+    """Converte recursivamente todos os tipos para JSON-safe."""
     if isinstance(data, dict):
         return {k: json_safe(v) for k, v in data.items()}
     if isinstance(data, list):
@@ -56,7 +56,6 @@ def load_latest_solar_data():
             logger.info(f"📥 Carregando dados: {latest}")
             df = pd.read_csv(latest)
 
-            # Converter timestamps se existirem
             if "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
@@ -77,7 +76,7 @@ def prepare_sequence(df, features, lookback):
     return seq_scaled.reshape(1, lookback, len(features)), scaler
 
 # ============================================================
-# CARREGAR MODELOS
+# CARREGAMENTO CORRIGIDO DOS MODELOS
 # ============================================================
 
 def load_models():
@@ -87,7 +86,7 @@ def load_models():
 
     models = {}
     for fname in os.listdir(model_dir):
-        if fname.endswith(".h5"):
+        if fname.endswith(".keras"):   # ← agora correto!
             path = os.path.join(model_dir, fname)
             logger.info(f"📦 Carregando modelo: {fname}")
 
@@ -98,7 +97,11 @@ def load_models():
             if model_type not in models:
                 models[model_type] = {}
 
-            models[model_type][horizon] = load_model(path)
+            # evitar erro de métricas → compile=False
+            model = load_model(path, compile=False)
+            model.compile(optimizer="adam", loss="mse")
+
+            models[model_type][horizon] = model
 
     return models
 
@@ -107,26 +110,16 @@ def load_models():
 # ============================================================
 
 def classify_risk(speed, bz):
-    """Classifica risco geomagnético de forma simples."""
     score = 0
-
-    if speed > 550:
-        score += 1
-    if speed > 700:
-        score += 2
-
-    if bz < -5:
-        score += 1
-    if bz < -10:
-        score += 2
-
+    if speed > 550: score += 1
+    if speed > 700: score += 2
+    if bz < -5: score += 1
+    if bz < -10: score += 2
     return score
 
 def risk_level(score):
-    if score <= 1:
-        return "Baixo"
-    if score <= 3:
-        return "Moderado"
+    if score <= 1: return "Baixo"
+    if score <= 3: return "Moderado"
     return "Alto"
 
 # ============================================================
@@ -137,24 +130,22 @@ def run_realtime_hac():
     try:
         logger.info("🚀 HAC 3.0 — Previsor em Tempo Real iniciado")
 
-        # Carregar dados reais
         df = load_latest_solar_data()
 
-        # Features disponíveis
-        possible_features = ["speed", "density", "temperature", "bx_gse", "by_gse", "bz_gse", "bt"]
+        possible_features = [
+            "speed", "density", "temperature",
+            "bx_gse", "by_gse", "bz_gse", "bt"
+        ]
         features = [f for f in possible_features if f in df.columns]
 
         if len(features) < 2:
             raise ValueError("Poucas features disponíveis para prever.")
 
-        # Carregar modelos
         models = load_models()
 
-        # Preparar sequência
         lookback = 36
         seq, scaler = prepare_sequence(df, features, lookback)
 
-        # Previsões
         predictions = {}
 
         for model_type in models:
@@ -164,18 +155,16 @@ def run_realtime_hac():
                 pred_unscaled = scaler.inverse_transform([[pred_scaled]])[0][0]
                 predictions[model_type][horizon_h] = float(pred_unscaled)
 
-        # Últimos valores observados
         current = {
-            "timestamp": safe_timestamp(df["timestamp"].iloc[-1]) if "timestamp" in df.columns else None,
+            "timestamp": safe_timestamp(df["timestamp"].iloc[-1]) 
+                if "timestamp" in df.columns else None,
             "speed": float(df["speed"].iloc[-1]) if "speed" in df.columns else None,
             "bz": float(df["bz_gse"].iloc[-1]) if "bz_gse" in df.columns else None,
         }
 
-        # Cálculo de risco
         score = classify_risk(current["speed"], current["bz"])
         risk = risk_level(score)
 
-        # 🔥 EVITAR ERRO: converter tudo para tipos JSON-safe
         output = json_safe({
             "generated_at": datetime.utcnow(),
             "current_conditions": current,
@@ -184,20 +173,17 @@ def run_realtime_hac():
             "predictions": predictions
         })
 
-        # Salvar resultado
         os.makedirs("results/realtime", exist_ok=True)
         out_file = f"results/realtime/hac_rt_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
 
         with open(out_file, "w") as f:
             json.dump(output, f, indent=2)
 
-        # Exibir resumo no terminal
-        logger.info("\n🌞 **Condição Atual:**")
+        logger.info("\n🌞 Condição Atual:")
         logger.info(f"Velocidade: {current['speed']} km/s | Bz: {current['bz']} nT")
-
         logger.info(f"\n⚠️ Risco geomagnético: {risk} (score={score})")
+        logger.info("\n🔮 Previsões:")
 
-        logger.info("\n🔮 **Previsões:**")
         for model_type in predictions:
             for horizon, value in predictions[model_type].items():
                 logger.info(f"{model_type.upper()} H{horizon}: {value:.2f}")
