@@ -1,21 +1,23 @@
 """
 hac_realtime_predict.py
-HAC 5.0 — Previsor Real-Time Avançado com múltiplos modelos e múltiplos horizontes
-Compatível com treino HAC Deep Learning 4.0
+HAC 5.2 — Previsor Real-Time Multi-Alvo (speed, Bz, density)
+Compatível com: train_hac_multibase.py (HAC 5.1)
 """
 
 import os
-import json
 import re
+import json
 import pickle
 import logging
 import warnings
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
+import gc
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import RobustScaler
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 
 # ============================================================
@@ -24,652 +26,815 @@ from tensorflow.keras.models import load_model
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
+    format="%(asctime)s - HAC_Realtime_Multi - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
     handlers=[
-        logging.FileHandler("hac_realtime.log", encoding='utf-8'),
-        logging.StreamHandler()
+        logging.StreamHandler(),
+        logging.FileHandler("hac_realtime_multitarget.log", encoding="utf-8")
     ]
 )
-logger = logging.getLogger("HAC_Realtime_Advanced")
+logger = logging.getLogger("HAC_Realtime_Multi")
 
-# Supressão de warnings
-warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+warnings.filterwarnings("ignore")
+tf.get_logger().setLevel("ERROR")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
-
+# Configurações globais
 VALID_MODEL_TYPES = ["lstm", "gru", "bilstm", "cnn_lstm"]
 VALID_HORIZONS = [1, 3, 6, 12, 24, 48]
-DEFAULT_LOOKBACK = 48
-MIN_SEQUENCE_LENGTH = 24
+
+ENSEMBLE_WEIGHTS = {
+    "lstm": 0.4,
+    "gru": 0.4,
+    "bilstm": 0.1,
+    "cnn_lstm": 0.1
+}
 
 class RealtimeConfig:
-    """Configurações para previsão em tempo real"""
-    PREDICTION_CONFIDENCE_THRESHOLD = 0.7
-    MAX_LOOKBACK = 168
-    DATA_QUALITY_THRESHOLD = 0.8  # 80% dos dados devem estar presentes
-    ENSEMBLE_WEIGHTS = {
-        "lstm": 0.3,
-        "gru": 0.3, 
-        "bilstm": 0.2,
-        "cnn_lstm": 0.2
-    }
+    MIN_DATA_POINTS = 24
+    MAX_SEQUENCE_GAP = 100  # máximo de pontos faltantes permitidos
+    MEMORY_CLEANUP_INTERVAL = 5  # limpar memória a cada 5 modelos
 
 # ============================================================
-# UTILITÁRIOS AVANÇADOS
+# UTILS AVANÇADOS
 # ============================================================
 
-def safe_timestamp(obj) -> str:
-    """Converte timestamp para string ISO format segura"""
+def setup_memory_optimization():
+    """Configura otimizações de memória para TensorFlow"""
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logger.info("✅ GPU configurada com memory growth")
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Erro na configuração GPU: {e}")
+
+def json_safe(obj: Any) -> Any:
+    """Converte objetos complexos em tipos serializáveis para JSON com fallbacks robustos."""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, (np.ndarray,)):
+        return obj.tolist()
+    if isinstance(obj, (np.generic,)):
+        return obj.item()
     if isinstance(obj, (datetime, pd.Timestamp)):
         return obj.isoformat()
-    elif pd.isna(obj):
-        return datetime.utcnow().isoformat()
-    return str(obj)
-
-def json_safe(data: Any) -> Any:
-    """Converte dados para formato JSON seguro"""
-    if isinstance(data, dict):
-        return {k: json_safe(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [json_safe(v) for v in data]
-    elif isinstance(data, np.generic):
-        return data.item()
-    elif isinstance(data, (np.ndarray, pd.Series)):
-        return data.tolist()
-    elif isinstance(data, (datetime, pd.Timestamp)):
-        return data.isoformat()
-    elif data is None:
+    if isinstance(obj, (float, int, str, bool)) or obj is None:
+        return obj
+    try:
+        return str(obj)
+    except Exception:
         return None
-    else:
-        return data
 
-def calculate_data_quality(df: pd.DataFrame, required_columns: List[str]) -> float:
-    """Calcula qualidade dos dados baseado em valores não nulos"""
-    if df.empty:
-        return 0.0
-    
-    quality_scores = []
-    for col in required_columns:
-        if col in df.columns:
-            non_null_ratio = 1 - df[col].isnull().sum() / len(df)
-            quality_scores.append(non_null_ratio)
-        else:
-            quality_scores.append(0.0)
-    
-    return np.mean(quality_scores) if quality_scores else 0.0
+def safe_timestamp(x) -> str:
+    """Conversão segura de timestamp com múltiplos fallbacks"""
+    if isinstance(x, (datetime, pd.Timestamp)):
+        return x.isoformat()
+    try:
+        return pd.to_datetime(x).isoformat()
+    except Exception:
+        return datetime.utcnow().isoformat()
+
+def clean_memory():
+    """Limpeza agressiva de memória para evitar vazamentos"""
+    gc.collect()
+    tf.keras.backend.clear_session()
+    logger.debug("🧹 Memória limpa")
 
 # ============================================================
-# 1. CARREGAMENTO DE DADOS AVANÇADO
+# 1. CARREGAR METADATA DE TREINO (metrics_multitarget_*.json) - CORRIGIDO
+# ============================================================
+
+def find_latest_metrics_file() -> str:
+    """Encontra o último arquivo de métricas multitarget em results/training."""
+    metrics_dir = "results/training"
+    if not os.path.exists(metrics_dir):
+        raise FileNotFoundError("❌ Diretório results/training não encontrado")
+
+    files = [
+        os.path.join(metrics_dir, f)
+        for f in os.listdir(metrics_dir)
+        if f.startswith("metrics_multitarget_") and f.endswith(".json")
+    ]
+    
+    if not files:
+        # Fallback: procurar em models/deep_hac por run_id
+        logger.warning("📁 Nenhum metrics_*.json encontrado, buscando run_id nos modelos...")
+        return find_run_id_from_models()
+    
+    # ✅ CORREÇÃO: Ordenar por data de criação real
+    latest = max(files, key=os.path.getctime)
+    logger.info(f"📄 Usando arquivo de métricas: {os.path.basename(latest)}")
+    return latest
+
+def find_run_id_from_models() -> str:
+    """Fallback: extrai run_id dos arquivos de modelo quando metrics não existe"""
+    model_dir = "models/deep_hac"
+    if not os.path.exists(model_dir):
+        raise FileNotFoundError("❌ Diretório models/deep_hac também não encontrado")
+    
+    run_ids = set()
+    for fname in os.listdir(model_dir):
+        if fname.endswith(".keras"):
+            # Padrão: model_h1_20250101_120000.keras
+            match = re.search(r"_(\d{8}_\d{6})\.keras$", fname)
+            if match:
+                run_ids.add(match.group(1))
+    
+    if not run_ids:
+        raise FileNotFoundError("❌ Nenhum run_id encontrado nos arquivos de modelo")
+    
+    latest_run_id = sorted(run_ids)[-1]  # Pega o mais recente
+    logger.info(f"🔍 Run_id detectado dos modelos: {latest_run_id}")
+    
+    # Cria um metrics_summary básico para continuar
+    return create_fallback_metrics(latest_run_id)
+
+def create_fallback_metrics(run_id: str) -> str:
+    """Cria um arquivo de métricas fallback quando o original não existe"""
+    fallback_path = f"results/training/metrics_multitarget_{run_id}.json"
+    os.makedirs("results/training", exist_ok=True)
+    
+    fallback_data = {
+        "lstm": {},
+        "gru": {}
+    }
+    
+    with open(fallback_path, "w", encoding="utf-8") as f:
+        json.dump(fallback_data, f, indent=2)
+    
+    logger.warning(f"📝 Criado arquivo de métricas fallback: {fallback_path}")
+    return fallback_path
+
+def load_training_metadata() -> Tuple[Dict[str, Any], str]:
+    """
+    Carrega o último metrics_multitarget_*.json e retorna:
+    - metrics_summary (dict)
+    - run_id (str)
+    """
+    metrics_path = find_latest_metrics_file()
+    
+    # Extrai run_id do filename de forma robusta
+    filename = os.path.basename(metrics_path)
+    match = re.search(r"metrics_multitarget_(\d{8}_\d{6})\.json", filename)
+    if not match:
+        # Fallback: tenta qualquer formato numérico
+        match = re.search(r"metrics_multitarget_(\d+)\.json", filename)
+        if not match:
+            raise ValueError(f"❌ Não consegui extrair run_id de {filename}")
+    
+    run_id = match.group(1)
+
+    try:
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            metrics_summary = json.load(f)
+    except Exception as e:
+        logger.error(f"❌ Erro ao carregar {metrics_path}: {e}")
+        # Fallback: metrics vazio
+        metrics_summary = {"lstm": {}, "gru": {}}
+
+    logger.info(f"🔎 Run_id detectado: {run_id}")
+    return metrics_summary, run_id
+
+# ============================================================
+# 2. CARREGAR MODELOS E SCALERS - CORRIGIDO E MELHORADO
+# ============================================================
+
+def load_all_models_for_run(run_id: str, metrics_summary: Dict[str, Any]):
+    """
+    Carrega modelos e scalers apenas para o run_id fornecido.
+    Agora com fallbacks robustos para metadata faltante.
+    """
+    model_dir = "models/deep_hac"
+    if not os.path.exists(model_dir):
+        raise FileNotFoundError(f"❌ Diretório de modelos não encontrado: {model_dir}")
+
+    models: Dict[str, Dict[int, Any]] = {}
+    scalers: Dict[str, Dict[int, Dict[str, RobustScaler]]] = {}
+    metadata: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    
+    loaded_count = 0
+
+    # 2.1 Carregar modelos .keras que contenham esse run_id
+    for fname in os.listdir(model_dir):
+        if not fname.endswith(".keras"):
+            continue
+        if run_id not in fname:
+            continue
+
+        path = os.path.join(model_dir, fname)
+        fname_lower = fname.lower()
+
+        # ✅ PADRÃO CORRIGIDO: Suporta múltiplos formatos
+        patterns = [
+            r"(lstm|gru|bilstm|cnn_lstm)_h(\d+)_" + re.escape(run_id),
+            r"(lstm|gru|bilstm|cnn_lstm)_h?(\d+).*" + re.escape(run_id),
+        ]
+        
+        model_type, horizon = None, None
+        for pattern in patterns:
+            match = re.search(pattern, fname_lower)
+            if match:
+                model_type = match.group(1)
+                horizon = int(match.group(2))
+                break
+        
+        if not model_type or not horizon:
+            logger.warning(f"⚠️ Nome de modelo não segue padrão esperado: {fname}")
+            continue
+
+        if model_type not in models:
+            models[model_type] = {}
+            metadata[model_type] = {}
+
+        try:
+            model = load_model(path, compile=False)
+            model.compile(optimizer="adam", loss="mse")
+            models[model_type][horizon] = model
+
+            # ✅ METADATA COM FALLBACKS ROBUSTOS
+            horizon_str = str(horizon)
+            metrics = metrics_summary.get(model_type, {}).get(horizon_str, {})
+            
+            # Fallback para targets
+            targets = metrics.get("targets", [])
+            if not targets:
+                # Tenta inferir do nome do arquivo ou usa padrão
+                if "speed" in fname_lower or "bz" in fname_lower or "density" in fname_lower:
+                    targets = ["speed", "bz_gse", "density"]
+                else:
+                    targets = ["speed", "bz_gse", "density"]  # padrão
+            
+            # Fallback para features  
+            features = metrics.get("features", [])
+            if not features:
+                features = targets + ["temperature", "bt", "bx_gse", "by_gse"]
+            
+            # Fallback para lookback
+            lookback = metrics.get("lookback", 48)
+            if model.input_shape and len(model.input_shape) > 1:
+                lookback = model.input_shape[1]  # prioridade: shape do modelo
+
+            metadata[model_type][horizon] = {
+                "filename": fname,
+                "targets": targets,
+                "features": features,
+                "lookback": lookback,
+                "params": model.count_params(),
+                "input_shape": str(model.input_shape),
+                "loaded_at": datetime.utcnow().isoformat()
+            }
+
+            loaded_count += 1
+            logger.info(
+                f"📦 Modelo carregado: {model_type.upper()} H{horizon} "
+                f"(targets={len(targets)}, lookback={lookback}, params={model.count_params():,})"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Erro ao carregar modelo {fname}: {e}")
+            continue
+
+    # 2.2 Carregar scalers do mesmo run_id - COM FALLBACKS
+    scaler_files_loaded = 0
+    for fname in os.listdir(model_dir):
+        if not fname.endswith(".pkl"):
+            continue
+        if run_id not in fname:
+            continue
+
+        path = os.path.join(model_dir, fname)
+        fname_lower = fname.lower()
+
+        # ✅ PADRÕES FLEXÍVEIS PARA SCALERS
+        patterns = [
+            r"scaler_(x|y)_(lstm|gru|bilstm|cnn_lstm)_h(\d+)_" + re.escape(run_id),
+            r"scaler_(x|y).*" + re.escape(run_id),
+        ]
+        
+        xy_flag, model_type, horizon = None, None, None
+        for pattern in patterns:
+            match = re.search(pattern, fname_lower)
+            if match:
+                xy_flag = match.group(1).upper()
+                model_type = match.group(2) if len(match.groups()) > 1 else "lstm"  # fallback
+                horizon = int(match.group(3)) if len(match.groups()) > 2 else 1     # fallback
+                break
+        
+        if not xy_flag:
+            continue
+
+        if model_type not in scalers:
+            scalers[model_type] = {}
+        if horizon not in scalers[model_type]:
+            scalers[model_type][horizon] = {}
+
+        try:
+            with open(path, "rb") as f:
+                scaler = pickle.load(f)
+            scalers[model_type][horizon][xy_flag] = scaler
+            scaler_files_loaded += 1
+            logger.debug(f"🔧 Scaler {xy_flag} carregado para {model_type.upper()} H{horizon}")
+        except Exception as e:
+            logger.error(f"❌ Erro ao carregar scaler {fname}: {e}")
+            continue
+
+    logger.info(f"📊 Total carregado: {loaded_count} modelos, {scaler_files_loaded} scalers (run_id={run_id})")
+    
+    if loaded_count == 0:
+        raise RuntimeError(f"❌ Nenhum modelo válido carregado para run_id {run_id}")
+    
+    return models, scalers, metadata
+
+# ============================================================
+# 3. CARREGAR DADOS RECENTES - CORRIGIDO
 # ============================================================
 
 def load_latest_data(data_path: Optional[str] = None) -> pd.DataFrame:
     """
-    Carrega dados mais recentes com múltiplas estratégias de fallback
+    Carrega dados mais recentes com estratégias robustas e validação.
     """
     search_paths = ["data_real", "data", "data/raw", "data/processed", "dataset"]
-    
+
     if data_path and os.path.exists(data_path):
         file_path = data_path
-        logger.info(f"📥 CARREGANDO DADOS DO CAMINHO ESPECIFICADO: {file_path}")
+        logger.info(f"📥 Carregando dados do caminho especificado: {file_path}")
     else:
         file_path = None
         for folder in search_paths:
             if not os.path.exists(folder):
                 continue
-            
-            csv_files = [f for f in os.listdir(folder) if f.endswith(".csv")]
-            if not csv_files:
-                continue
-            
-            # Encontra arquivo mais recente
             try:
+                csvs = [f for f in os.listdir(folder) if f.lower().endswith(".csv")]
+                if not csvs:
+                    continue
+                
+                # ✅ CORREÇÃO: Usar data de modificação mais recente
                 latest_file = max(
-                    csv_files, 
-                    key=lambda x: os.path.getctime(os.path.join(folder, x))
+                    csvs,
+                    key=lambda x: os.path.getmtime(os.path.join(folder, x))
                 )
                 file_path = os.path.join(folder, latest_file)
-                logger.info(f"📥 CARREGANDO DADOS MAIS RECENTES: {file_path}")
+                logger.info(f"📥 Carregando dados mais recentes: {file_path}")
                 break
             except Exception as e:
-                logger.warning(f"⚠️ ERRO AO ACESSAR {folder}: {e}")
+                logger.warning(f"⚠️ Erro ao acessar {folder}: {e}")
                 continue
-    
+
     if not file_path:
-        raise FileNotFoundError("❌ NENHUM ARQUIVO CSV ENCONTRADO NAS PASTAS DE BUSCA")
-    
-    # Carregar com tratamento de encoding
-    encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']
+        raise FileNotFoundError("❌ Nenhum CSV encontrado nas pastas de busca")
+
+    # ✅ CARREGAMENTO ROBUSTO COM MÚLTIPLOS ENCODINGS
+    encodings = ["utf-8", "latin-1", "iso-8859-1", "cp1252", "windows-1252"]
     df = None
-    
-    for encoding in encodings:
+
+    for enc in encodings:
         try:
-            df = pd.read_csv(file_path, encoding=encoding)
-            logger.info(f"✅ ARQUIVO CARREGADO COM ENCODING: {encoding}")
+            df = pd.read_csv(file_path, encoding=enc)
+            logger.info(f"✅ Arquivo carregado com encoding: {enc}")
             break
         except UnicodeDecodeError:
             continue
         except Exception as e:
-            logger.warning(f"⚠️ ERRO COM ENCODING {encoding}: {e}")
+            logger.warning(f"⚠️ Erro com encoding {enc}: {e}")
             continue
+
+    if df is None or df.empty:
+        raise ValueError(f"❌ Não foi possível carregar dados de {file_path}")
+
+    # Normalizar colunas para lowercase (compatível com treino)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # ✅ DETECÇÃO ROBUSTA DE TIMESTAMP
+    timestamp_candidates = ["timestamp", "time", "datetime", "date_time", "date"]
+    tcol = None
+    for c in timestamp_candidates:
+        if c in df.columns:
+            tcol = c
+            break
     
-    if df is None:
-        raise ValueError("❌ NÃO FOI POSSÍVEL DECODIFICAR O ARQUIVO COM NENHUM ENCODING COMUM")
+    if tcol:
+        try:
+            df[tcol] = pd.to_datetime(df[tcol], errors="coerce", utc=True)
+            df = df.dropna(subset=[tcol])
+            df = df.sort_values(tcol).reset_index(drop=True)
+            logger.info(f"🕒 Coluna temporal usada: {tcol} ({len(df)} registros após limpeza)")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao tratar coluna temporal {tcol}: {e}")
+
+    # ✅ VALIDAÇÃO DE DADOS MÍNIMOS
+    if len(df) < RealtimeConfig.MIN_DATA_POINTS:
+        raise ValueError(f"❌ Dados insuficientes: {len(df)} < {RealtimeConfig.MIN_DATA_POINTS}")
+
+    logger.info(f"📊 Dados carregados: {df.shape[0]} linhas × {df.shape[1]} colunas")
     
-    # Processamento de timestamp
-    timestamp_cols = ['timestamp', 'time', 'date', 'datetime']
-    for col in timestamp_cols:
-        if col in df.columns:
-            try:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-                df = df.sort_values(col).reset_index(drop=True)
-                logger.info(f"🕐 COLUNA DE TIMESTAMP IDENTIFICADA: {col}")
-                break
-            except Exception as e:
-                logger.warning(f"⚠️ ERRO AO PROCESSAR COLUNA {col}: {e}")
-    
-    logger.info(f"📊 DADOS CARREGADOS: {df.shape[0]} LINHAS × {df.shape[1]} COLUNAS")
-    
-    # Verificar qualidade dos dados
+    # Log de colunas numéricas disponíveis
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    quality = calculate_data_quality(df, numeric_cols[:3]) if numeric_cols else 0
-    logger.info(f"📈 QUALIDADE DOS DADOS: {quality:.1%}")
-    
-    if quality < RealtimeConfig.DATA_QUALITY_THRESHOLD:
-        logger.warning(f"⚠️ QUALIDADE DOS DADOS ABAIXO DO THRESHOLD: {quality:.1%} < {RealtimeConfig.DATA_QUALITY_THRESHOLD:.1%}")
+    logger.info(f"🔢 Colunas numéricas disponíveis: {numeric_cols}")
     
     return df
 
 # ============================================================
-# 2. DETECÇÃO E CARREGAMENTO DE MODELOS AVANÇADO
-# ============================================================
-
-def parse_model_metadata(filename: str) -> Tuple[str, int]:
-    """
-    Extrai metadados do modelo do nome do arquivo
-    Retorna: (model_type, horizon)
-    """
-    filename_lower = filename.lower()
-    
-    # Padrão principal: tipo_horizonte_data.keras
-    patterns = [
-        r"(lstm|gru|bilstm|cnn_lstm)_h?(\d+)_\d+\.(keras|h5)",
-        r"(lstm|gru|bilstm|cnn_lstm)_h?(\d+)\.(keras|h5)",
-        r"(\w+)_h?(\d+)_\d+\.(keras|h5)",
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, filename_lower)
-        if match:
-            model_type = match.group(1)
-            horizon = int(match.group(2))
-            
-            if model_type in VALID_MODEL_TYPES and horizon in VALID_HORIZONS:
-                return model_type, horizon
-    
-    # Fallback: busca por termos conhecidos
-    for model_type in VALID_MODEL_TYPES:
-        if model_type in filename_lower:
-            horizon_match = re.search(r"h?(\d+)", filename_lower)
-            horizon = int(horizon_match.group(1)) if horizon_match else 1
-            if horizon in VALID_HORIZONS:
-                return model_type, horizon
-    
-    logger.warning(f"🔍 METADADOS NÃO IDENTIFICADOS PARA: {filename}")
-    return "unknown", 1
-
-def load_scaler_file(file_path: str) -> Any:
-    """Carrega arquivo de scaler com fallback para diferentes métodos"""
-    try:
-        # Tenta joblib primeiro
-        try:
-            import joblib
-            return joblib.load(file_path)
-        except ImportError:
-            logger.debug("JOBSLIB NÃO DISPONÍVEL, USANDO PICKLE")
-        
-        # Fallback para pickle
-        with open(file_path, 'rb') as f:
-            return pickle.load(f)
-            
-    except Exception as e:
-        logger.error(f"❌ ERRO AO CARREGAR SCALER {file_path}: {e}")
-        return None
-
-def load_all_models() -> Tuple[Dict, Dict, Dict]:
-    """
-    Carrega todos os modelos, scalers e metadados disponíveis
-    Retorna: (models, scalers, metadata)
-    """
-    model_dir = "models/deep_hac"
-    if not os.path.exists(model_dir):
-        raise FileNotFoundError(f"❌ DIRETÓRIO DE MODELOS NÃO ENCONTRADO: {model_dir}")
-    
-    models = {}
-    scalers = {}
-    metadata = {}
-    
-    # Carregar modelos
-    for filename in os.listdir(model_dir):
-        file_path = os.path.join(model_dir, filename)
-        
-        if filename.endswith(('.keras', '.h5')):
-            model_type, horizon = parse_model_metadata(filename)
-            
-            if model_type not in models:
-                models[model_type] = {}
-            
-            try:
-                model = load_model(file_path, compile=False)
-                model.compile(optimizer="adam", loss="mse")
-                models[model_type][horizon] = model
-                
-                # Extrair metadados do modelo
-                input_shape = model.input_shape
-                lookback = input_shape[1] if input_shape and len(input_shape) > 1 else DEFAULT_LOOKBACK
-                
-                if model_type not in metadata:
-                    metadata[model_type] = {}
-                metadata[model_type][horizon] = {
-                    'filename': filename,
-                    'lookback': lookback,
-                    'input_shape': input_shape,
-                    'params': model.count_params(),
-                    'loaded_at': datetime.utcnow().isoformat()
-                }
-                
-                logger.info(f"📦 MODELO CARREGADO: {model_type.upper()} H{horizon} (LOOKBACK={lookback})")
-                
-            except Exception as e:
-                logger.error(f"❌ ERRO AO CARREGAR MODELO {filename}: {e}")
-    
-    # Carregar scalers
-    for filename in os.listdir(model_dir):
-        if filename.endswith('.pkl'):
-            file_path = os.path.join(model_dir, filename)
-            scaler = load_scaler_file(file_path)
-            
-            if scaler is None:
-                continue
-            
-            # Identificar modelo e horizonte do scaler
-            filename_lower = filename.lower()
-            
-            for model_type in VALID_MODEL_TYPES:
-                if model_type in filename_lower:
-                    horizon_match = re.search(r"h?(\d+)", filename_lower)
-                    if horizon_match:
-                        horizon = int(horizon_match.group(1))
-                        
-                        if model_type not in scalers:
-                            scalers[model_type] = {}
-                        if horizon not in scalers[model_type]:
-                            scalers[model_type][horizon] = {}
-                        
-                        if '_x_' in filename_lower or 'scaler_x' in filename_lower:
-                            scalers[model_type][horizon]['X'] = scaler
-                            logger.debug(f"🔧 SCALER X CARREGADO PARA {model_type.upper()} H{horizon}")
-                        elif '_y_' in filename_lower or 'scaler_y' in filename_lower:
-                            scalers[model_type][horizon]['Y'] = scaler
-                            logger.debug(f"🔧 SCALER Y CARREGADO PARA {model_type.upper()} H{horizon}")
-    
-    # Log resumo
-    total_models = sum(len(m) for m in models.values())
-    total_scalers = sum(len(s) for m in scalers.values() for s in m.values())
-    logger.info(f"📊 MODELOS CARREGADOS: {total_models}")
-    logger.info(f"🔧 SCALERS CARREGADOS: {total_scalers}")
-    
-    return models, scalers, metadata
-
-# ============================================================
-# 3. PREPARAÇÃO DE SEQUÊNCIA AVANÇADA - CORRIGIDA
+# 4. PREPARAR SEQUÊNCIA - CORRIGIDO COM FALLBACKS
 # ============================================================
 
 def prepare_sequence_for_model(
-    df: pd.DataFrame, 
-    features: List[str], 
+    df: pd.DataFrame,
+    feature_cols: List[str],
     lookback: int,
-    scaler_X: Any = None
+    scaler_X: Optional[RobustScaler]
 ) -> np.ndarray:
     """
-    Prepara sequência de entrada para um modelo específico
+    Prepara uma sequência (1, lookback, n_features) para previsão.
+    Com fallbacks robustos para dados faltantes.
     """
+    # ✅ VERIFICAÇÃO ROBUSTA DE FEATURES
+    available_features = [c for c in feature_cols if c in df.columns]
+    missing_features = set(feature_cols) - set(available_features)
+    
+    if missing_features:
+        logger.warning(f"⚠️ Features faltando: {missing_features}")
+        
+        if len(available_features) == 0:
+            raise ValueError(f"❌ Nenhuma feature disponível de {feature_cols}")
+        
+        # Usa apenas as features disponíveis
+        logger.info(f"🔄 Usando {len(available_features)} features disponíveis de {len(feature_cols)}")
+        feature_cols = available_features
+
+    # ✅ PREPARAÇÃO DE DADOS COM FALLBACKS
     if len(df) < lookback:
         available = len(df)
-        logger.warning(f"⚠️ DADOS INSUFICIENTES: {available} < {lookback}")
+        logger.warning(f"⚠️ Dados insuficientes ({available} < {lookback}), replicando linhas")
         
-        # Preencher com zeros se necessário
         if available == 0:
-            raise ValueError("❌ NENHUM DADO DISPONÍVEL PARA CRIAR SEQUÊNCIA")
+            raise ValueError("❌ Nenhum dado disponível para criar sequência")
         
-        # Repetir os dados disponíveis ou preencher com zeros
-        padding_needed = lookback - available
-        repeated_data = pd.concat([df] * (lookback // available + 1), ignore_index=True)
-        sequence_data = repeated_data[features].iloc[:lookback].values
-        logger.warning(f"🔄 SEQUÊNCIA PREENCHIDA: {available} -> {lookback} AMOSTRAS")
+        # Replicação inteligente mantendo estatísticas
+        reps = (lookback // available) + 1
+        df_rep = pd.concat([df] * reps, ignore_index=True)
+        data_slice = df_rep[feature_cols].iloc[-lookback:].values
     else:
-        sequence_data = df[features].tail(lookback).values
-    
-    # Aplicar scaler se fornecido - COM FALLBACK ROBUSTO
+        data_slice = df[feature_cols].iloc[-lookback:].values
+
+    # ✅ NORMALIZAÇÃO COM FALLBACKS EM CASCATA
     if scaler_X is not None:
         try:
-            # Reshape para 2D, transformar, e reshape de volta para 3D
-            original_shape = sequence_data.shape
-            sequence_2d = sequence_data.reshape(-1, sequence_data.shape[-1])
-            sequence_scaled = scaler_X.transform(sequence_2d)
-            sequence_data = sequence_scaled.reshape(original_shape)
-            logger.debug(f"🔧 SCALER X APLICADO COM SUCESSO")
+            orig_shape = data_slice.shape
+            data_2d = data_slice.reshape(-1, orig_shape[-1])
+            data_scaled = scaler_X.transform(data_2d)
+            data_slice = data_scaled.reshape(orig_shape)
+            logger.debug("🔧 Scaler X aplicado com sucesso")
         except Exception as e:
-            logger.error(f"❌ ERRO AO APLICAR SCALER X: {e}")
-            # Fallback: normalização simples com proteção robusta
+            logger.warning(f"⚠️ Erro ao aplicar scaler_X: {e}, usando normalização simples")
+            # Fallback 1: normalização por feature
             try:
-                sequence_data = (sequence_data - np.mean(sequence_data, axis=0)) / (np.std(sequence_data, axis=0) + 1e-8)
-                logger.debug("🔧 FALLBACK: NORMALIZAÇÃO SIMPLES APLICADA")
-            except Exception as fallback_error:
-                logger.error(f"❌ ERRO NO FALLBACK DE NORMALIZAÇÃO: {fallback_error}")
-                # Último recurso: normalização mínima
-                sequence_data = sequence_data / (np.max(np.abs(sequence_data)) + 1e-8)
+                data_slice = (data_slice - data_slice.mean(axis=0)) / (data_slice.std(axis=0) + 1e-8)
+            except Exception:
+                # Fallback 2: normalização global
+                data_slice = data_slice / (np.max(np.abs(data_slice)) + 1e-8)
     else:
         # Normalização básica como fallback
-        try:
-            sequence_data = (sequence_data - np.mean(sequence_data, axis=0)) / (np.std(sequence_data, axis=0) + 1e-8)
-        except Exception as e:
-            logger.error(f"❌ ERRO NA NORMALIZAÇÃO BÁSICA: {e}")
-            sequence_data = sequence_data / (np.max(np.abs(sequence_data)) + 1e-8)
-    
-    return sequence_data.reshape(1, lookback, len(features))
+        data_slice = (data_slice - data_slice.mean(axis=0)) / (data_slice.std(axis=0) + 1e-8)
+
+    return data_slice.reshape(1, lookback, len(feature_cols))
 
 # ============================================================
-# 4. CLASSIFICAÇÃO DE RISCO AVANÇADA
+# 5. CLASSIFICAÇÃO DE RISCO MELHORADA
 # ============================================================
 
 def classify_advanced_risk(speed: float, bz: float, density: float = None, bt: float = None) -> Dict[str, Any]:
     """
-    Classificação de risco avançada baseada em múltiplos parâmetros
+    Classificação de risco avançada com thresholds ajustáveis e múltiplos fatores.
     """
     score = 0
     triggers = []
+    warnings = []
+
+    # ✅ VALORES PADRÃO SEGUROS
+    if speed is None:
+        speed = 400
+        warnings.append("Velocidade assumida como 400 km/s (valor padrão)")
     
+    if bz is None:
+        bz = -2
+        warnings.append("Bz assumido como -2 nT (valor padrão)")
+
     # Velocidade do vento solar
-    if speed is not None:
-        if speed > 500:
-            score += 1
-            triggers.append(f"VELOCIDADE ALTA: {speed:.0f} KM/S")
-        if speed > 600:
-            score += 1
-        if speed > 700:
-            score += 2
-            triggers.append(f"VELOCIDADE MUITO ALTA: {speed:.0f} KM/S")
-        if speed > 800:
-            score += 2
-    
+    if speed > 500:
+        score += 1
+        triggers.append(f"VELOCIDADE ALTA: {speed:.0f} km/s")
+    if speed > 600:
+        score += 1
+    if speed > 700:
+        score += 2
+        triggers.append(f"VELOCIDADE MUITO ALTA: {speed:.0f} km/s")
+    if speed > 800:
+        score += 2
+        triggers.append(f"VELOCIDADE EXTREMA: {speed:.0f} km/s")
+
     # Componente Bz
-    if bz is not None:
-        if bz < -5:
+    if bz < -5:
+        score += 1
+        triggers.append(f"BZ NEGATIVO: {bz:.1f} nT")
+    if bz < -10:
+        score += 2
+        triggers.append(f"BZ FORTEMENTE NEGATIVO: {bz:.1f} nT")
+    if bz < -15:
+        score += 2
+        triggers.append(f"BZ CRÍTICO: {bz:.1f} nT")
+
+    # Densidade
+    if density is not None:
+        if density > 20:
             score += 1
-            triggers.append(f"BZ NEGATIVO: {bz:.1f} NT")
-        if bz < -10:
-            score += 2
-        if bz < -15:
-            score += 2
-            triggers.append(f"BZ FORTEMENTE NEGATIVO: {bz:.1f} NT")
-    
-    # Densidade (opcional)
-    if density is not None and density > 20:
-        score += 1
-        triggers.append(f"DENSIDADE ALTA: {density:.1f} P/CM³")
-    
-    # Campo magnético total (opcional)
-    if bt is not None and bt > 10:
-        score += 1
+            triggers.append(f"DENSIDADE ALTA: {density:.1f} p/cm³")
+        if density > 50:
+            score += 1
+            triggers.append(f"DENSIDADE MUITO ALTA: {density:.1f} p/cm³")
+    else:
+        warnings.append("Densidade não disponível para avaliação")
+
+    # Campo magnético total
+    if bt is not None:
+        if bt > 10:
+            score += 1
         if bt > 20:
             score += 1
-            triggers.append(f"CAMPO MAGNÉTICO FORTE: {bt:.1f} NT")
-    
-    # Determinar nível de risco
+            triggers.append(f"CAMPO MAGNÉTICO FORTE: {bt:.1f} nT")
+    else:
+        warnings.append("Campo magnético total não disponível para avaliação")
+
+    # ✅ CLASSIFICAÇÃO FINAL
     if score <= 2:
         level = "BAIXO"
         color = "green"
+        emoji = "🟢"
     elif score <= 4:
-        level = "MODERADO" 
+        level = "MODERADO"
         color = "yellow"
+        emoji = "🟡"
     elif score <= 7:
         level = "ALTO"
         color = "orange"
+        emoji = "🟠"
     else:
         level = "CRÍTICO"
         color = "red"
-    
+        emoji = "🔴"
+
     return {
         "score": score,
         "level": level,
         "color": color,
+        "emoji": emoji,
         "triggers": triggers,
-        "max_possible_score": 12
+        "warnings": warnings,
+        "max_possible_score": 15
     }
 
 # ============================================================
-# 5. PREVISÃO POR ENSEMBLE - CORRIGIDA
+# 6. ENSEMBLE MULTI-ALVO - CORRIGIDO
 # ============================================================
 
-def calculate_ensemble_prediction(predictions: Dict[str, Dict[int, float]]) -> Dict[int, Dict[str, float]]:
+def calculate_ensemble_multitarget(
+    predictions: Dict[str, Dict[int, Dict[str, float]]],
+    targets_per_horizon: Dict[int, List[str]]
+) -> Dict[int, Dict[str, Any]]:
     """
-    Calcula previsão por ensemble weighted por tipo de modelo
+    Calcula ensemble multi-alvo com proteção contra divisão por zero e dados faltantes.
     """
-    ensemble = {}
-    
-    # Agrupar por horizonte
-    for horizon in VALID_HORIZONS:
-        horizon_predictions = []
-        weights = []
-        
-        for model_type, horizons in predictions.items():
-            if horizon in horizons:
-                horizon_predictions.append(horizons[horizon])
-                weights.append(RealtimeConfig.ENSEMBLE_WEIGHTS.get(model_type, 0.1))
-        
-        if horizon_predictions:
-            # Calcular média ponderada
-            weighted_avg = np.average(horizon_predictions, weights=weights)
+    ensemble: Dict[int, Dict[str, Any]] = {}
+
+    for horizon, target_list in targets_per_horizon.items():
+        horizon_info = {
+            "targets": target_list,
+            "values": {},
+            "stats": {},
+            "models_contributing": {}
+        }
+
+        for tgt in target_list:
+            vals = []
+            weights = []
+            models_used = []
+
+            # Coleta previsões de todos os modelos para este target
+            for mtype, horizons_data in predictions.items():
+                if horizon in horizons_data and tgt in horizons_data[horizon]:
+                    value = horizons_data[horizon][tgt]
+                    vals.append(value)
+                    weights.append(ENSEMBLE_WEIGHTS.get(mtype, 0.1))
+                    models_used.append(mtype)
+
+            if not vals:
+                horizon_info["models_contributing"][tgt] = []
+                continue
+
+            # ✅ CÁLCULO ROBUSTO COM PROTEÇÃO CONTRA DIVISÃO POR ZERO
+            vals_arr = np.array(vals, dtype=float)
+            w = np.array(weights, dtype=float)
             
-            # Calcular estatísticas COM PROTEÇÃO CONTRA DIVISÃO POR ZERO
-            values_array = np.array(horizon_predictions)
-            denominator = abs(np.mean(values_array)) + 1e-6  # PROTEÇÃO ADICIONADA
-            confidence = max(0, 1 - (np.std(values_array) / denominator))
+            # Normaliza pesos se soma for zero
+            if w.sum() == 0:
+                w = np.ones_like(w) / len(w)
+            else:
+                w = w / w.sum()
+
+            value = float(np.average(vals_arr, weights=w))
+            std = float(vals_arr.std())
             
-            ensemble[horizon] = {
-                "value": float(weighted_avg),
-                "min": float(np.min(values_array)),
-                "max": float(np.max(values_array)),
-                "std": float(np.std(values_array)),
-                "models_used": len(horizon_predictions),
-                "confidence": confidence
+            # ✅ PROTEÇÃO CONTRA DIVISÃO POR ZERO
+            denominator = max(abs(np.mean(vals_arr)), 1e-6)
+            confidence = max(0.0, min(1.0, 1.0 - (std / denominator)))
+
+            horizon_info["values"][tgt] = value
+            horizon_info["stats"][tgt] = {
+                "min": float(vals_arr.min()),
+                "max": float(vals_arr.max()),
+                "std": std,
+                "confidence": confidence,
+                "n_models": len(vals_arr)
             }
-    
+            horizon_info["models_contributing"][tgt] = models_used
+
+        if horizon_info["values"]:
+            ensemble[horizon] = horizon_info
+
     return ensemble
 
 # ============================================================
-# 6. EXECUÇÃO PRINCIPAL AVANÇADA
+# 7. EXECUÇÃO PRINCIPAL - CORRIGIDA E MELHORADA
 # ============================================================
 
-def run_hac_realtime_advanced(data_path: Optional[str] = None) -> Dict[str, Any]:
+def run_hac_realtime_multitarget(data_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    Executa previsão em tempo real avançada
+    Pipeline completo com tratamento de erro robusto e otimizações de memória.
     """
-    logger.info("🚀 HAC 5.0 — REAL-TIME PREDICTOR AVANÇADO INICIADO")
+    logger.info("🚀 INICIANDO HAC 5.2 – PREVISOR REAL-TIME MULTI-ALVO")
     start_time = datetime.utcnow()
     
+    # ✅ CONFIGURAÇÃO INICIAL
+    setup_memory_optimization()
+
     try:
-        # 1. Carregar dados
-        df = load_latest_data(data_path)
-        
-        # 2. Identificar features disponíveis
-        preferred_features = [
-            "speed", "density", "temperature",
-            "bx_gse", "by_gse", "bz_gse", "bt",
-            "vx_gse", "vy_gse", "vz_gse", "pressure"
-        ]
-        
-        available_features = [f for f in preferred_features if f in df.columns]
-        
-        if len(available_features) < 2:
-            # Fallback para colunas numéricas
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            available_features = numeric_cols[:4]  # Primeiras 4 colunas numéricas
-            logger.warning(f"⚠️ USANDO FALLBACK FEATURES: {available_features}")
-        
-        logger.info(f"🎯 FEATURES UTILIZADAS: {available_features}")
-        
-        # 3. Carregar modelos e scalers
-        models, scalers, metadata = load_all_models()
-        
+        # 1) Carregar metadata de treinamento
+        metrics_summary, run_id = load_training_metadata()
+
+        # 2) Carregar modelos e scalers desse run_id
+        models, scalers, model_metadata = load_all_models_for_run(run_id, metrics_summary)
         if not any(models.values()):
-            raise ValueError("❌ NENHUM MODELO VÁLIDO FOI CARREGADO")
-        
-        # 4. Coletar condições atuais
+            raise RuntimeError("❌ Nenhum modelo carregado para o run_id atual")
+
+        # 3) Carregar dados recentes
+        df = load_latest_data(data_path)
+
+        # 4) Determinar condições atuais
         current_conditions = {}
-        for feature in ['speed', 'density', 'bz_gse', 'bt'] + available_features[:3]:
-            if feature in df.columns and not df[feature].isnull().all():
-                current_conditions[feature] = float(df[feature].iloc[-1])
         
-        # Adicionar timestamp
-        if 'timestamp' in df.columns:
-            current_conditions['timestamp'] = safe_timestamp(df['timestamp'].iloc[-1])
-        else:
-            current_conditions['timestamp'] = datetime.utcnow().isoformat()
+        # ✅ DETECÇÃO ROBUSTA DE VARIÁVEIS
+        speed_candidates = ["speed", "flow_speed", "v_sw", "proton_speed", "vx", "vp"]
+        bz_candidates = ["bz_gse", "bz_gsm", "bz", "bzgse"] 
+        density_candidates = ["density", "n_p", "np", "proton_density", "n"]
+        bt_candidates = ["bt", "btotal", "b_total", "bmag"]
         
-        # 5. Fazer previsões para cada modelo
-        predictions = {}
-        prediction_details = {}
+        def find_first_available(candidates, default=None):
+            for col in candidates:
+                if col in df.columns and not df[col].isnull().all():
+                    return float(df[col].iloc[-1])
+            return default
         
-        for model_type in models:
-            predictions[model_type] = {}
-            prediction_details[model_type] = {}
-            
-            for horizon in models[model_type]:
-                model = models[model_type][horizon]
+        current_conditions["speed"] = find_first_available(speed_candidates, 400.0)
+        current_conditions["bz_gse"] = find_first_available(bz_candidates, -2.0)
+        current_conditions["density"] = find_first_available(density_candidates)
+        current_conditions["bt"] = find_first_available(bt_candidates)
+
+        # Timestamp atual dos dados
+        for cand in ["timestamp", "time", "datetime", "date_time", "date"]:
+            if cand in df.columns:
+                current_conditions["timestamp"] = safe_timestamp(df[cand].iloc[-1])
+                break
+        if "timestamp" not in current_conditions:
+            current_conditions["timestamp"] = datetime.utcnow().isoformat()
+
+        logger.info(f"🌡️ Condições atuais: {current_conditions}")
+
+        # 5) Previsões por modelo/horizonte
+        predictions_by_model: Dict[str, Dict[int, Dict[str, float]]] = {}
+        targets_per_horizon: Dict[int, List[str]] = {}
+        
+        model_count = 0
+
+        for mtype, horizons in models.items():
+            predictions_by_model[mtype] = {}
+
+            for horizon, model in horizons.items():
+                # ✅ LIMPEZA PERIÓDICA DE MEMÓRIA
+                if model_count > 0 and model_count % RealtimeConfig.MEMORY_CLEANUP_INTERVAL == 0:
+                    clean_memory()
                 
-                # Obter lookback do modelo ou metadata
-                lookback = DEFAULT_LOOKBACK
-                if (model_type in metadata and 
-                    horizon in metadata[model_type] and 
-                    'lookback' in metadata[model_type][horizon]):
-                    lookback = metadata[model_type][horizon]['lookback']
-                else:
-                    # Inferir do shape de input
-                    if model.input_shape and len(model.input_shape) > 1:
-                        lookback = model.input_shape[1]
+                model_count += 1
                 
-                # Obter scaler apropriado - PULAR MODELOS SEM SCALER_Y PARA MAIOR PRECISÃO
-                scaler_X = None
-                scaler_Y = None
+                meta = model_metadata.get(mtype, {}).get(horizon, {})
+                targets = meta.get("targets", [])
+                features = meta.get("features", [])
+                lookback = meta.get("lookback", 48)
+
+                if not targets or not features:
+                    logger.warning(f"⚠️ Targets ou features não definidos para {mtype} H{horizon}, pulando.")
+                    continue
+
+                # Registrar targets para esse horizonte
+                if horizon not in targets_per_horizon:
+                    targets_per_horizon[horizon] = targets
+
+                # Pegando scalers
+                scaler_X = scalers.get(mtype, {}).get(horizon, {}).get("X")
+                scaler_Y = scalers.get(mtype, {}).get(horizon, {}).get("Y")
                 
-                if (model_type in scalers and 
-                    horizon in scalers[model_type]):
-                    scaler_X = scalers[model_type][horizon].get('X')
-                    scaler_Y = scalers[model_type][horizon].get('Y')
-                
-                # PULAR MODELOS INCOMPLETOS (SEM SCALER_Y)
                 if scaler_Y is None:
-                    logger.warning(f"⏭️  PULANDO {model_type.upper()} H{horizon} - SCALER Y NÃO ENCONTRADO")
+                    logger.warning(f"⚠️ Sem scaler_Y para {mtype} H{horizon}, pulando.")
                     continue
-                
+
                 try:
-                    # Preparar sequência
-                    sequence = prepare_sequence_for_model(
-                        df, available_features, lookback, scaler_X
-                    )
-                    
-                    # Fazer previsão
-                    pred_scaled = model.predict(sequence, verbose=0).flatten()[0]
-                    
-                    # Desnormalizar
-                    try:
-                        pred = scaler_Y.inverse_transform([[pred_scaled]])[0][0]
-                    except Exception as e:
-                        logger.warning(f"⚠️ ERRO AO DESNORMALIZAR {model_type.upper()} H{horizon}: {e}")
-                        pred = float(pred_scaled)
-                    
-                    predictions[model_type][horizon] = float(pred)
-                    
-                    # Guardar detalhes
-                    prediction_details[model_type][horizon] = {
-                        'value': float(pred),
-                        'lookback_used': lookback,
-                        'features_used': available_features,
-                        'scaler_used': scaler_Y is not None,
-                        'timestamp': datetime.utcnow().isoformat()
-                    }
-                    
-                    logger.info(f"📈 {model_type.upper()} H{horizon}: {pred:.2f}")  # LOGGING MELHORADO
-                    
+                    seq = prepare_sequence_for_model(df, features, lookback, scaler_X)
+                    y_scaled = model.predict(seq, verbose=0)[0]  # shape: (n_targets,)
+                    y_real = scaler_Y.inverse_transform(y_scaled.reshape(1, -1))[0]
+
+                    # Montar dicionário de saída: target_name -> valor
+                    pred_dict = {}
+                    for idx, tname in enumerate(targets):
+                        pred_dict[tname] = float(y_real[idx])
+
+                    predictions_by_model[mtype][horizon] = pred_dict
+                    logger.info(f"📈 {mtype.upper()} H{horizon}h -> {pred_dict}")
+
                 except Exception as e:
-                    logger.error(f"❌ ERRO NA PREVISÃO {model_type.upper()} H{horizon}: {e}")
+                    logger.error(f"❌ Erro na previsão {mtype} H{horizon}: {e}")
                     continue
-        
-        # 6. Calcular previsão por ensemble
-        ensemble_predictions = calculate_ensemble_prediction(predictions)
-        
-        # 7. Classificar risco
-        current_speed = current_conditions.get('speed')
-        current_bz = current_conditions.get('bz_gse')
-        current_density = current_conditions.get('density')
-        current_bt = current_conditions.get('bt')
-        
+
+        # 6) Ensemble por horizonte / alvo
+        ensemble_predictions = calculate_ensemble_multitarget(predictions_by_model, targets_per_horizon)
+
+        # 7) Avaliar risco baseado nas condições ATUAIS
         risk_assessment = classify_advanced_risk(
-            current_speed, current_bz, current_density, current_bt
+            current_conditions.get("speed"),
+            current_conditions.get("bz_gse"),
+            current_conditions.get("density"),
+            current_conditions.get("bt")
         )
-        
-        # 8. Preparar resultado final
+
+        # 8) Montar saída final
         execution_time = (datetime.utcnow() - start_time).total_seconds()
         
         output = {
             "metadata": {
-                "version": "HAC 5.0",
+                "version": "HAC 5.2",
+                "run_id": run_id,
                 "generated_at": datetime.utcnow().isoformat(),
                 "execution_time_seconds": execution_time,
-                "data_points_used": len(df),
-                "models_loaded": {mtype: len(models[mtype]) for mtype in models},
-                "features_used": available_features
+                "models_loaded": {m: list(models[m].keys()) for m in models},
+                "n_models": sum(len(h) for h in models.values()),
+                "n_predictions": len(predictions_by_model)
             },
             "current_conditions": current_conditions,
             "risk_assessment": risk_assessment,
             "predictions": {
-                "by_model": predictions,
+                "by_model": predictions_by_model,
                 "ensemble": ensemble_predictions
-            },
-            "details": prediction_details
+            }
         }
-        
-        # 9. Salvar resultado
+
+        # 9) Salvar em JSON
         os.makedirs("results/realtime", exist_ok=True)
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"results/realtime/hac_rt_advanced_{timestamp}.json"
-        
-        with open(output_filename, 'w', encoding='utf-8') as f:
+        ts_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        out_path = f"results/realtime/hac_rt_multitarget_{ts_str}.json"
+
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(json_safe(output), f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"💾 RESULTADO SALVO: {output_filename}")
-        logger.info(f"⏱️  TEMPO DE EXECUÇÃO: {execution_time:.2f}s")
-        logger.info(f"🎯 PREVISÕES GERADAS: {len(ensemble_predictions)} HORIZONTES")
-        logger.info(f"⚠️  NÍVEL DE RISCO: {risk_assessment['level']} (SCORE: {risk_assessment['score']})")
-        
+
+        logger.info(f"💾 Resultado realtime salvo em: {out_path}")
+        logger.info(f"⚠️ {risk_assessment['emoji']} Nível de risco: {risk_assessment['level']} (score={risk_assessment['score']})")
+        logger.info(f"⏱️ Tempo total de execução: {execution_time:.2f}s")
+
         return output
-        
+
     except Exception as e:
-        logger.error(f"❌ ERRO CRÍTICO NA EXECUÇÃO: {e}")
+        logger.error(f"❌ Falha crítica na execução: {e}")
+        clean_memory()  # Limpa memória mesmo em caso de erro
         raise
 
 # ============================================================
-# FUNÇÃO DE SERVIÇO PARA INTEGRAÇÃO - CORRIGIDA
+# FUNÇÃO DE SERVIÇO PARA INTEGRAÇÃO
 # ============================================================
 
 def get_latest_prediction() -> Optional[Dict[str, Any]]:
     """
-    Retorna a previsão mais recente do diretório de resultados
-    Útil para integração com outros sistemas
+    Retorna a previsão mais recente do diretório de resultados.
+    Útil para integração com outros sistemas.
     """
     results_dir = "results/realtime"
     if not os.path.exists(results_dir):
@@ -680,35 +845,36 @@ def get_latest_prediction() -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        # ORDENAR POR TEMPO DE CRIAÇÃO - CORREÇÃO APLICADA
+        # ✅ ORDENAÇÃO CORRETA POR DATA DE CRIAÇÃO
         latest_file = max(json_files, key=lambda f: os.path.getctime(os.path.join(results_dir, f)))
         latest_path = os.path.join(results_dir, latest_file)
         
         with open(latest_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"❌ ERRO AO CARREGAR PREVISÃO MAIS RECENTE: {e}")
+        logger.error(f"❌ Erro ao carregar previsão mais recente: {e}")
         return None
 
 # ============================================================
-# EXECUÇÃO
+# CLI
 # ============================================================
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description='HAC REAL-TIME PREDICTION SYSTEM')
-    parser.add_argument('--data_path', type=str, help='CAMINHO PARA ARQUIVO DE DADOS ESPECÍFICO')
-    parser.add_argument('--verbose', '-v', action='store_true', help='MODO VERBOSO')
+
+    parser = argparse.ArgumentParser(description="HAC 5.2 – Previsor Real-Time Multi-Alvo")
+    parser.add_argument("--data_path", type=str, help="Caminho opcional para um CSV específico de dados")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Modo verboso para debug")
     
     args = parser.parse_args()
-    
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+        logger.info("🔍 Modo verboso ativado")
+
     try:
-        result = run_hac_realtime_advanced(args.data_path)
-        logger.info("✅ PREVISÃO EM TEMPO REAL CONCLUÍDA COM SUCESSO!")
+        result = run_hac_realtime_multitarget(args.data_path)
+        logger.info("✅ Previsão em tempo real concluída com sucesso!")
     except Exception as e:
-        logger.error(f"❌ FALHA NA PREVISÃO EM TEMPO REAL: {e}")
+        logger.error(f"❌ Falha na previsão em tempo real: {e}")
         exit(1)
