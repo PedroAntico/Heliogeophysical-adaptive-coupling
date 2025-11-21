@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-fetch_omni.py — versão fixa 2025
-OMNI 1-min com variáveis estáveis (speed, Bz).
+fetch_omni.py - Versão corrigida 2025
+Baixa OMNI 1-minute dos últimos 12 meses (API OMNIWeb + parser robusto)
+Salva em data_real/omni_last12m.csv pronto para o HAC 5.1
 """
 
 import os
@@ -10,113 +11,86 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
+# Variáveis que você realmente usa no HAC 5.1
+VARS = [8, 23, 25, 24, 78, 80, 81, 82]  # speed, density, temp, pressure, Bt, Bx, By, Bz
 
-def extract_file_link(text):
-    """Extrai qualquer link .lst, .txt, .dat, .tmp da página."""
-    patterns = [
-        r"(https?://[^\s\"']+\.lst)",
-        r"(https?://[^\s\"']+\.txt)",
-        r"(https?://[^\s\"']+\.dat)",
-        r"(https?://[^\s\"']+\.tmp)",
-    ]
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            return m.group(1)
-    return None
+OMNI_URL = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
 
+def build_url(start_date: str, end_date: str) -> str:
+    params = f"activity=ftp&res=1min&spacecraft=omni2&start_date={start_date}&end_date={end_date}&vars={'&vars='.join(map(str, VARS))}"
+    return f"{OMNI_URL}?{params}"
 
 def fetch_last_year():
     end = datetime.utcnow()
     start = end - timedelta(days=365)
 
-    sd = start.strftime("%Y%m%d")
-    ed = end.strftime("%Y%m%d")
+    start_s = start.strftime("%Y%m%d")
+    end_s = end.strftime("%Y%m%d")
 
-    print(f"📡 OMNI 1-min de {sd} até {ed}")
+    print(f"Baixando OMNI 1-min de {start_s} até {end_s}...")
 
-    base = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
-
-    # 🚨 Apenas variáveis 100% estáveis
-    VARS = [8, 23]
-
-    params = (
-        f"activity=ftp"
-        f"&res=1min"
-        f"&spacecraft=omni2"
-        f"&start_date={sd}"
-        f"&end_date={ed}"
-        f"&maxdays=400"
-    )
-
-    for v in VARS:
-        params += f"&vars={v}"
-
-    url = f"{base}?{params}"
-
-    print("🔍 Solicitação à NASA...")
+    url = build_url(start_s, end_s)
     r = requests.get(url)
-    if r.status_code != 200:
-        raise RuntimeError(f"Erro HTTP {r.status_code}")
+    r.raise_for_status()
 
-    text = r.text
+    # Novo regex 2025 (o link agora fica dentro de <a href="...">)
+    match = re.search(r'href="(https?://omniweb\.gsfc\.nasa\.gov[^"]+\.lst)"', r.text)
+    if not match:
+        raise RuntimeError("Não encontrou o link do .lst – NASA mudou o HTML de novo?")
+    
+    lst_url = match.group(1).replace("&amp;", "&")
+    print(f"Link encontrado: {lst_url}")
 
-    if "Error" in text or "wrong variable" in text:
-        print("\n❌ A NASA rejeitou variáveis solicitadas.")
-        print("Conteúdo recebido:\n")
-        print(text[:400])
-        raise RuntimeError("Variáveis inválidas para este dataset.")
+    data = requests.get(lst_url).text
 
-    print("🔍 Encontrando link real...")
-    link = extract_file_link(text)
-    if not link:
-        print("❌ Nenhum link encontrado")
-        print(text[:400])
-        raise RuntimeError("Não foi possível extrair o arquivo real.")
+    lines = [l for l in data.splitlines() if not l.startswith('#') and l.strip()]
 
-    print(f"📎 Link real: {link}")
-    print("⬇ Baixando arquivo...")
-    data = requests.get(link).text
-
+    # Parser fixo correto do OMNI 1-min (colunas de largura fixa + múltiplos espaços)
     rows = []
-    for line in data.splitlines():
-        if not line.strip() or line.startswith("#"):
+    for line in lines:
+        # Divide por múltiplos espaços
+        parts = re.split(r'\s+', line.strip())
+        if len(parts) < 3: 
             continue
-        rows.append(re.split(r"\s+", line.strip()))
+        rows.append(parts)
 
     df = pd.DataFrame(rows)
 
-    expected_cols = ["year", "doy", "hhmm", "speed", "bz"]
-    df = df.iloc[:, :len(expected_cols)]
-    df.columns = expected_cols
+    # Primeiras colunas sempre: YEAR, DOY, Hour, Minute  (agora são 4 colunas!)
+    df.columns = ["year", "doy", "hour", "minute"] + [f"v{i}" for i in range(len(df.columns)-4)]
 
-    ts = []
-    for _, row in df.iterrows():
+    # Só pega as colunas que pedimos + timestamp
+    df = df.iloc[:, :4 + len(VARS)]
+
+    # Monta timestamp corretamente
+    def make_ts(row):
         try:
-            ts.append(datetime.strptime(
-                f"{row['year']} {int(row['doy']):03d} {str(row['hhmm']).zfill(4)}",
-                "%Y %j %H%M"
-            ))
+            return datetime.strptime(f"{row['year']} {row['doy']} {row['hour']} {row['minute']}", "%Y %j %H %M")
         except:
-            ts.append(None)
+            return pd.NaT
 
-    df["timestamp"] = ts
-    df = df.dropna()
+    df["timestamp"] = df.apply(make_ts, axis=1)
+    df = df.dropna(subset=["timestamp"])
 
-    for c in ["speed", "bz"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Colunas finais
+    colunas_finais = ["timestamp", "speed", "density", "temp", "pressure", "Bt", "Bx", "By", "Bz"]
+    df = df[["timestamp"] + [f"v{i}" for i in range(len(VARS))]]
+    df.columns = colunas_finais
 
+    # Converte para número (9999.9, 99999. etc são valores faltantes no OMNI)
+    for c in colunas_finais[1:]:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    # Remove valores absurdos/faltantes típicos do OMNI
+    df = df.replace([99999.9, 9999.9, 999.9, -9999.9], pd.NA)
     df = df.dropna()
 
     os.makedirs("data_real", exist_ok=True)
-    out = "data_real/omni_last12m_basic.csv"
-    df.to_csv(out, index=False)
-
-    print(f"✅ Salvo em: {out}")
-    print(f"📊 Linhas: {len(df)}")
-
-    return out
-
+    caminho = "data_real/omni_last12m.csv"
+    df.to_csv(caminho, index=False)
+    
+    print(f"Sucesso! {len(df):,} linhas salvas em {caminho}")
+    return caminho
 
 if __name__ == "__main__":
     fetch_last_year()
