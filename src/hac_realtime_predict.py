@@ -148,16 +148,20 @@ def run_realtime_hac():
 
         predictions = {}
 
-        for model_type in models:
-            predictions[model_type] = {}
-            for horizon_h, model in models[model_type].items():
-                target = df["speed"] if "speed" in df.columns else df[features[0]]
-
+target = df["speed"] if "speed" in df.columns else df[features[0]]
 mean = target.mean()
 std = target.std()
 
-pred_unscaled = float(pred_scaled * std + mean)
-                predictions[model_type][horizon_h] = float(pred_unscaled)
+for model_type in models:
+    predictions[model_type] = {}
+    for horizon_h, model in models[model_type].items():
+
+        pred_scaled = model.predict(seq, verbose=0)[0][0]
+
+        # desfazer normalização do target
+        pred_unscaled = float(pred_scaled * std + mean)
+
+        predictions[model_type][horizon_h] = pred_unscaled
 
         current = {
             "timestamp": safe_timestamp(df["timestamp"].iloc[-1]) 
