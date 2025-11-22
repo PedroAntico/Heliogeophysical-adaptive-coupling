@@ -1,117 +1,86 @@
 #!/usr/bin/env python3
 """
-prepare_real_data.py
-Transforma o arquivo OMNI real em dados de treinamento para o HAC
-Gera:
-  - X_train, X_val, X_test
-  - y_train, y_val, y_test
-  - escalonadores
-  - horizontes: 1, 3, 6, 12, 24, 48 horas
-  - lookback padrão: 168 horas (1 semana)
+prepare_real_data.py - versão corrigida
+Compatível com o arquivo omni_labeled.csv
 """
 
 import os
-import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
+import numpy as np
 
-INPUT = "data_real/omni_converted.csv"
-OUTPUT = "data_real/hac_ready.npz"
+INPUT_FILE = "data_real/omni_labeled.csv"
+OUTPUT_DATA = "data_real/omni_scaled.npy"
+OUTPUT_SCALERS = "data_real/scalers.pkl"
 
-LOOKBACK = 168  # 7 dias de histórico
-HORIZONS = [1, 3, 6, 12, 24, 48]
+# Mapeamento correto com base no rename_omni_columns.py
+RENAME_MAP = {
+    "Speed": "speed",
+    "Density": "density",
+    "Bz_GSE": "bz",
+    "Pressure": "pressure",
+    "Bt": "bt"
+}
 
-TARGETS = ["speed", "density", "bz_gse"]  # multioutput HAC
+FEATURES = ["speed", "density", "bz", "pressure", "bt"]
 
-def load_data():
-    df = pd.read_csv(INPUT, parse_dates=["timestamp"])
-    df = df.sort_values("timestamp")
 
-    # interpolar / limpar
-    df = df.interpolate().dropna()
+def load_and_prepare():
+    print("📂 Lendo dados:", INPUT_FILE)
+    df = pd.read_csv(INPUT_FILE)
+
+    print("🔧 Renomeando colunas para padrão HAC...")
+    df = df.rename(columns=RENAME_MAP)
+
+    print("📊 Colunas atuais:", df.columns.tolist())
+
+    # Verificação
+    for feat in FEATURES:
+        if feat not in df.columns:
+            raise ValueError(f"❌ ERRO: coluna '{feat}' não encontrada no CSV!")
+
+    print("✔️ Todas as colunas essenciais encontradas!")
 
     return df
 
-def scale_data(df):
-    scalers = {}
-    scaled = {}
 
-    for col in TARGETS:
+def scale_data(df):
+    print("🔧 Normalizando dados...")
+    scalers = {}
+    scaled = pd.DataFrame()
+
+    for col in FEATURES:
         sc = MinMaxScaler()
-        scaled[col] = sc.fit_transform(df[col].values.reshape(-1, 1))
+        scaled[col] = sc.fit_transform(df[col].values.reshape(-1, 1)).flatten()
         scalers[col] = sc
 
+    print("✔️ Normalização concluída!")
     return scaled, scalers
 
-def create_sequences(scaled):
-    X_list = []
-    Y_list = {h: [] for h in HORIZONS}
 
-    n = len(scaled[TARGETS[0]])
+def save_outputs(scaled, scalers):
+    import pickle
 
-    for i in range(LOOKBACK, n - max(HORIZONS)):
-        # Entrada: janela de 168h com todas as variáveis
-        window = np.stack([scaled[col][i-LOOKBACK:i, 0] for col in TARGETS], axis=1)
-        X_list.append(window)
+    print("💾 Salvando dados normalizados...")
+    np.save(OUTPUT_DATA, scaled.values)
 
-        # Saídas para cada horizonte
-        for h in HORIZONS:
-            future_idx = i + h
-            Y_list[h].append([scaled[col][future_idx, 0] for col in TARGETS])
+    print("💾 Salvando scalers...")
+    with open(OUTPUT_SCALERS, "wb") as f:
+        pickle.dump(scalers, f)
 
-    X = np.array(X_list)
-    Y = {h: np.array(Y_list[h]) for h in HORIZONS}
+    print("🎉 Arquivos salvos:")
+    print(" •", OUTPUT_DATA)
+    print(" •", OUTPUT_SCALERS)
 
-    return X, Y
-
-def split_data(X, Y):
-    n = len(X)
-    train_end = int(n * 0.70)
-    val_end   = int(n * 0.85)
-
-    split = {}
-
-    split["X_train"] = X[:train_end]
-    split["X_val"]   = X[train_end:val_end]
-    split["X_test"]  = X[val_end:]
-
-    for h in HORIZONS:
-        split[f"y_train_h{h}"] = Y[h][:train_end]
-        split[f"y_val_h{h}"]   = Y[h][train_end:val_end]
-        split[f"y_test_h{h}"]  = Y[h][val_end:]
-
-    return split
 
 def main():
-    print("📂 Lendo dados reais...")
-    df = load_data()
-
-    print(f"✔️ Dados carregados: {len(df)} linhas")
-    print("🔧 Normalizando...")
+    df = load_and_prepare()
     scaled, scalers = scale_data(df)
+    save_outputs(scaled, scalers)
 
-    print("📐 Criando sequências...")
-    X, Y = create_sequences(scaled)
+    print("\n🎯 TUDO PRONTO!")
+    print("Agora você já pode treinar o HAC modelo real-time.")
 
-    print(f"✔️ X shape = {X.shape}")
-
-    print("✂️ Separando treino/validação/teste...")
-    split = split_data(X, Y)
-
-    print("💾 Salvando pacote final HAC...")
-    os.makedirs("data_real", exist_ok=True)
-
-    np.savez_compressed(
-        OUTPUT,
-        **split,
-        scalers_target_speed = scalers["speed"].min_,  # apenas referência
-        scalers_target_density = scalers["density"].min_,
-        scalers_target_bz = scalers["bz_gse"].min_,
-    )
-
-    print("\n🎉 PRONTO!")
-    print(f"Arquivo gerado -> {OUTPUT}")
-    print("Agora você pode treinar o HAC usando esse dataset.")
 
 if __name__ == "__main__":
     main()
