@@ -1,118 +1,149 @@
 #!/usr/bin/env python3
 """
-Parser universal para arquivos OMNI baixados via OMNIWeb (.lst.txt)
-Detecta automaticamente se o formato é:
-A) ANO DOY HORA MIN VARS...
-B) ANO MÊS DIA VARS...
-C) ANO MÊS DIA HORA VARS...
+convert_omni_txt_to_csv.py
+Converte arquivos baixados manualmente do OMNIWeb (.lst.txt)
+para um CSV estruturado e limpo, pronto para o HAC.
+
+Suporta:
+- Formato YEAR MONTH DAY VALUE1 VALUE2 ...
+- DAY = 0  (último dia do mês anterior)
 """
 
 import os
-import re
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 INPUT_FILE = "src/omni2_of3LE00pQF.txt"
 OUTPUT_DIR = "data_real"
-OUTPUT_FILE = "data_real/omni_converted.csv"
+OUTPUT_FILE = f"{OUTPUT_DIR}/omni_converted.csv"
 
 
-def detect_format(parts):
-    """
-    Detecta o formato da linha analisando a quantidade e tipo de colunas
-    """
-
-    # Ex: 2024 11 22 6.3 -1.2 ...
-    if len(parts) >= 5:
-        if parts[1].isdigit() and parts[2].isdigit():
-            return "YMD"  # Ano mês dia + valores
-    
-    # Ex: 2024 320 13 00 var var...
-    if parts[1].isdigit() and len(parts) >= 6:
-        if 1 <= int(parts[1]) <= 366:  # DOY
-            return "YDOYHM"
-    
-    return "UNKNOWN"
+# ---------------------------------------------------------
+# 🔍 Detecta se o arquivo está no formato Y-M-D
+# ---------------------------------------------------------
+def detect_format(first_data_line):
+    parts = first_data_line.split()
+    if len(parts) >= 4:
+        # Exemplo: "2024 8 0  2.7  -2.3 ..."
+        if len(parts[0]) == 4:
+            return "YMD"
+    return None
 
 
-def parse_line(parts, detected_format):
-    """Converte uma linha para timestamp + valores"""
+# ---------------------------------------------------------
+# ⏳ Função para transformar cada linha em timestamp + valores
+# ---------------------------------------------------------
+def parse_line(parts):
+    year = int(parts[0])
+    month = int(parts[1])
+    day = int(parts[2])  # Pode ser 0!
 
-    if detected_format == "YDOYHM":
-        year = int(parts[0])
-        doy = int(parts[1])
-        hour = int(parts[2])
-        minute = int(parts[3])
-        ts = datetime.strptime(f"{year} {doy}", "%Y %j").replace(hour=hour, minute=minute)
-        values = parts[4:]
-        return ts, values
+    # ---------------------------------------------------------
+    # 💥 Caso DAY = 0 → último dia do mês anterior
+    # ---------------------------------------------------------
+    if day == 0:
+        if month == 1:
+            year -= 1
+            month = 12
+        else:
+            month -= 1
 
-    if detected_format == "YMD":
-        year = int(parts[0])
-        month = int(parts[1])
-        day = int(parts[2])
+        # Último dia do mês (robusto)
+        next_month = month + 1 if month < 12 else 1
+        next_year = year if month < 12 else year + 1
+        last_day = (datetime(next_year, next_month, 1) - timedelta(days=1)).day
 
-        # Sem hora → assume 00:00
+        day = last_day
+
+    # ---------------------------------------------------------
+    # 📅 Criar timestamp
+    # ---------------------------------------------------------
+    try:
         ts = datetime(year, month, day)
-        values = parts[3:]
-        return ts, values
+    except ValueError:
+        return None, None
 
-    return None, None
+    # ---------------------------------------------------------
+    # 🔢 Converter valores numéricos
+    # ---------------------------------------------------------
+    values = []
+    for x in parts[3:]:
+        try:
+            f = float(x)
+            # Filtrar valores inválidos típicos da NASA
+            if f not in (9999, 999.9, 99999.9, -999.9, -1e5):
+                values.append(f)
+        except:
+            values.append(None)
+
+    return ts, values
 
 
+# ---------------------------------------------------------
+# 📥 Processa o arquivo inteiro
+# ---------------------------------------------------------
 def parse_file(path):
-    print(f"📂 Lendo arquivo: {path}")
+    with open(path, "r") as f:
+        lines = [l.strip() for l in f.readlines() if l.strip()]
 
-    rows = []
-    detected_format = None
+    # Filtrar cabeçalhos (# e textos do HTML)
+    data_lines = [l for l in lines if l[0].isdigit()]
 
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if not line.strip() or line.startswith("#"):
-                continue
-
-            parts = re.split(r"\s+", line.strip())
-
-            if detected_format is None:
-                detected_format = detect_format(parts)
-                print(f"🔍 Formato detectado: {detected_format}")
-
-                if detected_format == "UNKNOWN":
-                    print("❌ Formato desconhecido. Envie 20 linhas aqui no chat.")
-                    return None
-
-            ts, values = parse_line(parts, detected_format)
-
-            if ts is None:
-                continue
-
-            clean_values = [
-                float(v) if v.replace(".", "", 1).replace("-", "", 1).isdigit() else None
-                for v in values
-            ]
-
-            rows.append([ts] + clean_values)
-
-    if not rows:
-        print("❌ Nenhuma linha válida encontrada.")
+    if len(data_lines) == 0:
+        print("❌ Nenhuma linha numérica encontrada!")
         return None
 
-    df = pd.DataFrame(rows)
-    colnames = ["timestamp"] + [f"var_{i}" for i in range(1, df.shape[1])]
-    df.columns = colnames
+    # Detectar formato
+    fmt = detect_format(data_lines[0])
+    print(f"🔍 Formato detectado: {fmt}")
 
-    print(f"✔️ Linhas processadas: {len(df)}")
+    rows = []
+    for line in data_lines:
+        parts = line.split()
+        ts, values = parse_line(parts)
+        if ts is not None:
+            rows.append([ts] + values)
+
+    print(f"✔️ Linhas processadas: {len(rows)}")
+
+    if len(rows) == 0:
+        print("❌ Nenhuma linha válida processada.")
+        return None
+
+    # Criar DataFrame
+    df = pd.DataFrame(rows)
+    df.rename(columns={0: "timestamp"}, inplace=True)
+
+    # Nomear colunas numericamente
+    for i in range(1, df.shape[1]):
+        df.rename(columns={i: f"var_{i}"}, inplace=True)
+
     return df
 
 
-def save(df):
+# ---------------------------------------------------------
+# 💾 Salvar CSV
+# ---------------------------------------------------------
+def save_csv(df):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     df.to_csv(OUTPUT_FILE, index=False)
-    print(f"💾 CSV salvo em: {OUTPUT_FILE}")
+
+    print(f"\n💾 CSV salvo em: {OUTPUT_FILE}")
+    print(f"📈 Total de linhas: {len(df)}")
+    print("📌 Primeiras linhas:")
+    print(df.head())
 
 
+# ---------------------------------------------------------
+# 🚀 MAIN
+# ---------------------------------------------------------
 if __name__ == "__main__":
+    print(f"📂 Lendo arquivo: {INPUT_FILE}")
+
     df = parse_file(INPUT_FILE)
+
     if df is not None:
-        save(df)
-        print("🚀 PRONTO!")
+        save_csv(df)
+        print("\n🎯 Pronto para usar no HAC training!")
+    else:
+        print("\n❌ Falha na conversão.")
