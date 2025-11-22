@@ -1,4 +1,4 @@
-²#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 prepare_real_data.py
 Transforma o arquivo OMNI real em dados de treinamento para o HAC
